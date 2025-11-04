@@ -408,6 +408,42 @@
     } catch {}
   });
 
+  // Loopback test: record ~1s from current (or default) mic and play back. Report % non-zero.
+  $('btnLoopback')?.addEventListener('click', async () => {
+    try {
+      const raw = $('rawMic').checked;
+      const constr = { audio: { echoCancellation: !raw, noiseSuppression: !raw, autoGainControl: !raw, channelCount: 1 }, video: false };
+      if (state.deviceId) constr.audio.deviceId = { exact: state.deviceId };
+      log('loopback constraints', JSON.stringify(constr));
+      const stream = state.mediaStream || await navigator.mediaDevices.getUserMedia(constr);
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+      const rec = new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 128000 });
+      const chunks = [];
+      rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+      await new Promise((resolve) => { rec.onstop = resolve; rec.start(); setTimeout(() => { try { rec.stop(); } catch {} }, 1100); });
+      const blob = new Blob(chunks, { type: mime });
+      log('loopback blob', `type=${blob.type} size=${blob.size}B`);
+      // Decode and analyze
+      const arr = await blob.arrayBuffer();
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const buf = await ctx.decodeAudioData(arr.slice(0));
+      const ch0 = buf.getChannelData(0);
+      let nz = 0, peak = 0, sum = 0; const n = ch0.length; const eps = 1e-4;
+      for (let i=0;i<n;i++){ const v = ch0[i]; const a = Math.abs(v); if (a > eps) nz++; if (a > peak) peak = a; sum += v*v; }
+      const pctNz = Math.round((nz / Math.max(1,n)) * 10000) / 100;
+      const rms = Math.sqrt(sum / Math.max(1,n));
+      log('loopback analysis', `nonZero=${pctNz}% peak=${peak.toFixed(3)} rms=${rms.toFixed(3)}`);
+      // Playback
+      const url = URL.createObjectURL(blob);
+      const a = new Audio(url);
+      try { if (state.outputSupported && state.speakerId) await a.setSinkId(state.speakerId); } catch {}
+      a.play().catch(()=>{});
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (e) {
+      log('loopback error', e.message || e);
+    }
+  });
+
   // Auto-detect mic: try available devices briefly and choose the one with highest peak
   $('btnAutoDetect').addEventListener('click', async () => {
     try {
