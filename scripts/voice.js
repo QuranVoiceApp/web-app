@@ -16,7 +16,9 @@
   $('wsUrl').textContent = wsUrl;
   const urlParams = new URLSearchParams(location.search);
   const sendMode = (urlParams.get('send') || 'json').toLowerCase(); // 'json' (default) or 'binary'
+  const diag = urlParams.get('diag') === '1' || urlParams.get('debug') === 'verbose';
   log('sendMode', sendMode);
+  if (diag) log('diag', 'on');
 
   const metrics = {
     sentBytesAudio: 0,
@@ -69,6 +71,22 @@
     if (state.ws) return;
     try {
       log('Connecting to', wsUrl);
+      if (diag) {
+        try {
+          log('ua', navigator.userAgent);
+          if (navigator.mediaDevices?.getSupportedConstraints) {
+            log('supportedConstraints', JSON.stringify(navigator.mediaDevices.getSupportedConstraints()));
+          }
+          if (document.visibilityState) log('visibility', document.visibilityState);
+          if (navigator.permissions?.query) {
+            navigator.permissions.query({ name: 'microphone' }).then(r => log('perm.microphone', r.state)).catch(()=>{});
+          }
+          navigator.mediaDevices?.enumerateDevices?.().then(list => {
+            const info = list.map(d => ({ kind: d.kind, id: (d.deviceId||'').slice(0,8)+'…', label: d.label||'', groupId: (d.groupId||'').slice(0,8)+'…' }));
+            log('devices', JSON.stringify(info));
+          }).catch(()=>{});
+        } catch {}
+      }
       const ws = new WebSocket(wsUrl);
       ws.binaryType = 'arraybuffer';
 
@@ -227,6 +245,7 @@
         const ia = msg.ingress_audio;
         if (ia && typeof ia === 'object') {
           log('<= ingress', `chunks=${ia.chunks} bytes=${ia.bytes}`);
+          try { state.lastIngress = { chunks: ia.chunks||0, bytes: ia.bytes||0, ts: ia.last_ts||Date.now() }; } catch {}
           try {
             const pill = $('ingress-pill');
             if (pill) {
@@ -243,6 +262,7 @@
         break;
       case 'session.no_audio_ingress@v1':
         log('<= no_audio_ingress', JSON.stringify(msg));
+        state.eventCounts = state.eventCounts || {}; state.eventCounts['no_audio_ingress'] = (state.eventCounts['no_audio_ingress']||0)+1;
         break;
       case 'input_audio_buffer.speech_started':
       case 'input_audio_buffer.speech_ended':
@@ -324,9 +344,7 @@
     try {
       // Clear any residual buffered audio on server
       try { if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify({ type: 'input_audio_buffer.clear' })); } catch {}
-      const raw = $('rawMic').checked;
-      const constraints = { audio: { echoCancellation: !raw, noiseSuppression: !raw, autoGainControl: !raw, channelCount: 1 }, video: false };
-      if (state.deviceId) constraints.audio.deviceId = { exact: state.deviceId };
+      const constraints = buildConstraints();
       try { log('getUserMedia constraints', JSON.stringify(constraints)); } catch {}
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
@@ -369,6 +387,10 @@
         try {
           let nz = 0; for (let i=0;i<ds.length;i++) if (Math.abs(ds[i]) > 1e-4) nz++;
           metrics.nzSamples += nz; metrics.totalSamples += ds.length; if ((metrics.sentAppends % 20) === 0) renderMetrics();
+          if (diag && (metrics.sentAppends % 50 === 0)) {
+            const sample = Array.from(ds.slice(0, 8)).map(v => Number(v.toFixed(4)));
+            log('frame sample', JSON.stringify(sample));
+          }
         } catch {}
         if (state.ws && state.ws.readyState === 1) {
           try {
@@ -396,12 +418,64 @@
           tr.onmute = () => log('track mute event');
           tr.onunmute = () => log('track unmute event');
           try { log('track settings', JSON.stringify(tr.getSettings())); } catch {}
+          if (diag) {
+            try { if (tr.getConstraints) log('track constraints', JSON.stringify(tr.getConstraints())); } catch {}
+            try { if (tr.getCapabilities) log('track caps', JSON.stringify(tr.getCapabilities())); } catch {}
+          }
         }
       } catch {}
       state.mediaStream = stream; state.audioContext = ctx; /* state.processor set above */ state.analyser = analyser; state.micActive = true;
       $('btnMic').textContent = 'Stop Mic';
       log('Mic started');
+      // Periodic diagnostics summary (diag mode)
+      if (diag) {
+        try {
+          if (state.summaryTimer) clearInterval(state.summaryTimer);
+          state.summaryTimer = setInterval(() => {
+            try {
+              const nzPct = metrics.totalSamples ? Math.round((metrics.nzSamples/metrics.totalSamples)*100) : 0;
+              const ingress = state.lastIngress || { chunks: 0, bytes: 0 };
+              const wsState = state.ws ? state.ws.readyState : -1;
+              const summary = {
+                t: new Date().toISOString(),
+                capture: (document.getElementById('captureMode')||{value:'worklet'}).value || 'worklet',
+                send: sendMode,
+                ctx: ctx.state,
+                micActive: state.micActive,
+                deviceId: (state.deviceId||'default'),
+                nzPct,
+                lastPeak: Number((state.lastPeakRms?.peak||0).toFixed(3)),
+                lastRms: Number((state.lastPeakRms?.rms||0).toFixed(3)),
+                sentAppends: metrics.sentAppends,
+                sentBytes: metrics.sentBytesAudio,
+                ingressChunks: ingress.chunks,
+                ingressBytes: ingress.bytes,
+                ws: wsState,
+                events: state.eventCounts||{},
+              };
+              log('SUMMARY', JSON.stringify(summary));
+            } catch {}
+          }, 3000);
+        } catch {}
+      }
+      if (diag) {
+        try {
+          if (state._diagTimer) clearInterval(state._diagTimer);
+          state._diagTimer = setInterval(() => {
+            try {
+              const buf = new Float32Array(analyser.fftSize);
+              analyser.getFloatTimeDomainData(buf);
+              let peak = 0, sum = 0, nz = 0; for (let i=0;i<buf.length;i++){ const a=Math.abs(buf[i]); peak=Math.max(peak,a); sum+=a*a; if (a>1e-4) nz++; }
+              const rms = Math.sqrt(sum / Math.max(1, buf.length));
+              const nzPct = Math.round((nz / buf.length) * 100);
+              log('analyser', `peak=${peak.toFixed(3)} rms=${rms.toFixed(3)} nz=${nzPct}%`);
+            } catch {}
+          }, 1000);
+        } catch {}
+      }
       startVisualizer();
+      // Auto record+analyse in diag mode
+      if (diag) { try { await autoRecordAnalyse(stream, 5000); } catch (e) { log('autoRecord error', e.message||e); } }
     } catch (e) {
       log('Mic error', e.message || e);
     }
@@ -413,6 +487,8 @@
       state.processor && state.processor.disconnect();
       state.audioContext && state.audioContext.close();
       state.mediaStream && state.mediaStream.getTracks().forEach(t => t.stop());
+      if (state._diagTimer) { clearInterval(state._diagTimer); state._diagTimer = null; }
+      if (state.summaryTimer) { clearInterval(state.summaryTimer); state.summaryTimer = null; }
     } catch {}
     // Commit the audio buffer to trigger response
     try {
@@ -442,6 +518,11 @@
       a.href = URL.createObjectURL(blob); a.download = `qvt-log-${Date.now()}.txt`; a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 3000);
     } catch {}
+  });
+  $('btnClearLog').addEventListener('click', () => { const l=$('log'); if (l) l.value=''; logBuffer.length=0; log('cleared logs'); });
+  $('btnCopyLog').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(logBuffer.join('\n')); log('copied logs to clipboard'); }
+    catch { try { const l=$('log'); l.focus(); l.select(); document.execCommand('copy'); log('copied logs (fallback)'); } catch (e) { log('copy failed', e.message||e); } }
   });
   $('btnResumeAudio').addEventListener('click', async () => {
     try { await state.audioContext?.resume(); } catch {}
@@ -548,6 +629,9 @@
   if (typeof saved.rawMic === 'boolean') $('rawMic').checked = saved.rawMic;
   if (saved.deviceId) state.deviceId = saved.deviceId;
   if (saved.speakerId) state.speakerId = saved.speakerId;
+  // URL overrides
+  if (urlRaw) $('rawMic').checked = true;
+  if (urlMode === 'worklet' || urlMode === 'script') { try { (document.getElementById('captureMode')||{}).value = urlMode; } catch {} }
   if (saved.captureMode && document.getElementById('captureMode')) document.getElementById('captureMode').value = saved.captureMode;
   const persist = () => localStorage.setItem('qvt-settings', JSON.stringify({
     vad: $('vadThresh').value,
