@@ -192,6 +192,7 @@
           duckLatencyMs: state.duckLatencyMs || 0,
           cancelEvents: state.cancelEvents || 0,
         });
+        try { window.__qvtTest._markReady(); } catch {}
       }
     } catch {}
   };
