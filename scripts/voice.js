@@ -25,10 +25,13 @@
     recvAudioBytes: 0,
     recvTranscriptChars: 0,
     silenceFrames: 0,
+    nzSamples: 0,
+    totalSamples: 0,
   };
   const renderMetrics = () => {
     const m = $('metrics'); if (!m) return;
-    m.textContent = `sentAppends=${metrics.sentAppends} sentBytesAudio=${metrics.sentBytesAudio}B · recvAudioChunks=${metrics.recvAudioChunks} recvAudioBytes=${metrics.recvAudioBytes}B · transcriptChars=${metrics.recvTranscriptChars}`;
+    const nzPct = metrics.totalSamples ? Math.round((metrics.nzSamples / metrics.totalSamples) * 100) : 0;
+    m.textContent = `sentAppends=${metrics.sentAppends} sentBytesAudio=${metrics.sentBytesAudio}B · recvAudioChunks=${metrics.recvAudioChunks} recvAudioBytes=${metrics.recvAudioBytes}B · transcriptChars=${metrics.recvTranscriptChars} · nz=${nzPct}%`;
   };
 
   const state = {
@@ -74,6 +77,7 @@
         state.connected = true;
         setConn(true);
         log('WebSocket open');
+        try { state.playCtx?.resume(); } catch {}
         // Send client version/state for diagnostics (not forwarded to OpenAI)
         try {
           const ver = (document.currentScript && document.currentScript.src) || 'qvt-web';
@@ -330,11 +334,17 @@
       const analyser = ctx.createAnalyser(); analyser.fftSize = 1024; analyser.smoothingTimeConstant = 0.85;
       const processor = ctx.createScriptProcessor(4096, 1, 1);
       source.connect(analyser); source.connect(processor); processor.connect(ctx.destination);
+      try { await ctx.resume(); log('AudioContext state', ctx.state); } catch (e) { log('AudioContext resume error', e.message || e); }
       processor.onaudioprocess = (e) => {
         const input = e.inputBuffer.getChannelData(0);
         // Downsample to 24 kHz
         const ds = downsample48kTo24k(input);
         const pcmBuf = float32ToPCM16(ds);
+        // Track non-zero samples
+        try {
+          let nz = 0; for (let i=0;i<ds.length;i++) if (Math.abs(ds[i]) > 1e-4) nz++;
+          metrics.nzSamples += nz; metrics.totalSamples += ds.length; if ((metrics.sentAppends % 20) === 0) renderMetrics();
+        } catch {}
         if (state.ws && state.ws.readyState === 1) {
           try {
             if (sendMode === 'binary') {
@@ -406,6 +416,11 @@
       a.href = URL.createObjectURL(blob); a.download = `qvt-log-${Date.now()}.txt`; a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 3000);
     } catch {}
+  });
+  $('btnResumeAudio').addEventListener('click', async () => {
+    try { await state.audioContext?.resume(); } catch {}
+    try { await state.playCtx?.resume(); } catch {}
+    log('resume', `audio=${state.audioContext?.state} play=${state.playCtx?.state}`);
   });
 
   // Loopback test: record ~1s from current (or default) mic and play back. Report % non-zero.
