@@ -54,10 +54,15 @@
       state.inactivityTimer = setTimeout(() => {
         try {
           if (state.ws && state.ws.readyState === 1) {
-            // Only commit if some audio was sent recently
-            if ((Date.now() - (state.lastAudioSentAt||0)) > (commitDelay - 50) && (metrics.sentAppends||0) > 0) {
+            // Only commit if some audio was sent recently and we have ≥100ms buffered since last commit
+            const ageOk = (Date.now() - (state.lastAudioSentAt||0)) > (commitDelay - 50);
+            const durOk = (state.msSinceLastCommit||0) >= 100;
+            if (ageOk && durOk && (metrics.sentAppends||0) > 0) {
               state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
-              state.ws.send(JSON.stringify({ type: 'response.create' }));
+              state.msSinceLastCommit = 0;
+              if (!state.responseActive) {
+                state.ws.send(JSON.stringify({ type: 'response.create' }));
+              }
               log('auto-commit (inactivity)');
             }
           }
@@ -157,6 +162,7 @@
           if (state.speakerId) {
             state.sinkEl.setSinkId(state.speakerId).then(() => log('speaker set', state.speakerId)).catch(()=>{});
           }
+          try { state.sinkEl.play?.(); } catch {}
         }
         // Prepare jitter buffer for TTS playback (smooths network jitter)
         try {
