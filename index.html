@@ -53,6 +53,13 @@
           <button id="btnClear" title="Clear transcript and logs">Clear</button>
           <button id="btnDownload" title="Download debug log">Download Log</button>
         </div>
+        <div class="row">
+          <label>Mic Device
+            <select id="device" style="min-width:260px"></select>
+          </label>
+          <button id="btnRefreshDevs" title="Refresh input devices">Refresh Devices</button>
+          <span class="muted" id="devInfo"></span>
+        </div>
         <p class="muted">Backend WS: <code id="wsUrl"></code></p>
         <div class="row" style="gap:8px">
           <div class="meter"><div id="meterFill" class="meter-fill"></div></div>

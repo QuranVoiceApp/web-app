@@ -41,6 +41,7 @@
     meterFill: null,
     meterText: null,
     clipEl: null,
+    deviceId: null,
   };
 
   const setConn = (ok) => {
@@ -79,6 +80,9 @@
           input_sample_rate_hz: 24000,
         };
         try { ws.send(JSON.stringify(sessionUpdate)); } catch {}
+
+        // Prepare/select devices after connection
+        initDevices();
       };
       ws.onmessage = (ev) => {
         if (typeof ev.data !== 'string') return; // we only expect text frames
@@ -260,7 +264,9 @@
     try {
       // Clear any residual buffered audio on server
       try { if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify({ type: 'input_audio_buffer.clear' })); } catch {}
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
+      const constraints = { audio: { echoCancellation: true, noiseSuppression: true }, video: false };
+      if (state.deviceId) constraints.audio.deviceId = { exact: state.deviceId };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
       const source = ctx.createMediaStreamSource(stream);
       const processor = ctx.createScriptProcessor(4096, 1, 1);
@@ -304,6 +310,8 @@
     state.processor = null; state.audioContext = null; state.mediaStream = null; state.micActive = false;
     $('btnMic').textContent = 'Start Mic';
     log('Mic stopped');
+    // Reset meter display
+    try { if (state.meterFill) state.meterFill.style.width = '0%'; if (state.meterText) state.meterText.textContent = 'level: 0%'; if (state.clipEl) state.clipEl.style.display='none'; } catch {}
   }
 
   $('btnConnect').addEventListener('click', () => {
@@ -336,6 +344,71 @@
   $('voice').addEventListener('change', persist);
   $('ptt').addEventListener('change', persist);
   $('autoCommit').addEventListener('change', persist);
+
+  // Real-time session.update when voice or VAD threshold changes
+  const sendSessionUpdate = () => {
+    if (!state.connected || !state.ws || state.ws.readyState !== 1) return;
+    const threshold = parseFloat($('vadThresh').value || '0.7');
+    const payload = {
+      type: 'session.update',
+      voice: $('voice').value,
+      vad_threshold: threshold,
+      turn_detection: { type: 'server_vad', threshold },
+      input_audio_format: 'pcm16',
+      input_sample_rate_hz: 24000,
+    };
+    try { state.ws.send(JSON.stringify(payload)); log('=> session.update', JSON.stringify({ voice: payload.voice, threshold })); } catch {}
+  };
+  let updateTimer = null;
+  const sendSessionUpdateThrottled = () => {
+    if (updateTimer) return;
+    updateTimer = setTimeout(() => { updateTimer = null; sendSessionUpdate(); }, 250);
+  };
+  $('vadThresh').addEventListener('input', () => { persist(); sendSessionUpdateThrottled(); });
+  $('voice').addEventListener('change', () => { persist(); sendSessionUpdateThrottled(); });
+
+  // Devices
+  async function enumerateAudioInputs() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const inputs = devices.filter(d => d.kind === 'audioinput');
+      const sel = $('device');
+      const prev = sel.value;
+      sel.innerHTML = '';
+      inputs.forEach(d => {
+        const opt = document.createElement('option');
+        opt.value = d.deviceId; opt.textContent = d.label || `Microphone (${d.deviceId.slice(0,6)}…)`;
+        sel.appendChild(opt);
+      });
+      // Restore saved device if present
+      const savedDev = saved.deviceId;
+      if (savedDev && inputs.some(d => d.deviceId === savedDev)) sel.value = savedDev;
+      else if (prev && inputs.some(d => d.deviceId === prev)) sel.value = prev;
+      state.deviceId = sel.value || null;
+      $('devInfo').textContent = inputs.length ? `${inputs.length} input(s)` : 'No inputs found';
+    } catch (e) {
+      $('devInfo').textContent = `devices error: ${e.message || e}`;
+    }
+  }
+
+  async function initDevices() {
+    try {
+      // Some browsers need a permission grant before labels are available
+      const test = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      test.getTracks().forEach(t => t.stop());
+    } catch {}
+    await enumerateAudioInputs();
+  }
+
+  $('btnRefreshDevs').addEventListener('click', () => enumerateAudioInputs());
+  $('device').addEventListener('change', async () => {
+    state.deviceId = $('device').value || null;
+    persist();
+    if (state.micActive) { stopMic(); startMic(); }
+  });
+  if (navigator.mediaDevices && 'ondevicechange' in navigator.mediaDevices) {
+    navigator.mediaDevices.ondevicechange = () => enumerateAudioInputs();
+  }
 
   // Push‑to‑talk (hold Space)
   document.addEventListener('keydown', (e) => {
