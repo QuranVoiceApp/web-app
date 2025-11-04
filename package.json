@@ -1,0 +1,11 @@
+{
+  "name": "quran-voice-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test:phase1": "playwright test --config=playwright.config.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.2"
+  }
+}
