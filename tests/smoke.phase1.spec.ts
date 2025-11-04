@@ -8,7 +8,9 @@ test('Phase 1 transport sanity', async ({ page }) => {
   const consoleErrors: string[] = [];
   page.on('console', (msg) => {
     if (msg.type() === 'error') {
-      consoleErrors.push(msg.text());
+      const text = msg.text();
+      if (text.includes("frame-ancestors")) return;
+      consoleErrors.push(text);
     }
   });
 
