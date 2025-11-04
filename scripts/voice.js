@@ -372,7 +372,7 @@
           try { log('track settings', JSON.stringify(tr.getSettings())); } catch {}
         }
       } catch {}
-      state.mediaStream = stream; state.audioContext = ctx; state.processor = processor; state.analyser = analyser; state.micActive = true;
+      state.mediaStream = stream; state.audioContext = ctx; /* state.processor set above */ state.analyser = analyser; state.micActive = true;
       $('btnMic').textContent = 'Stop Mic';
       log('Mic started');
       startVisualizer();
@@ -522,6 +522,7 @@
   if (typeof saved.rawMic === 'boolean') $('rawMic').checked = saved.rawMic;
   if (saved.deviceId) state.deviceId = saved.deviceId;
   if (saved.speakerId) state.speakerId = saved.speakerId;
+  if (saved.captureMode && document.getElementById('captureMode')) document.getElementById('captureMode').value = saved.captureMode;
   const persist = () => localStorage.setItem('qvt-settings', JSON.stringify({
     vad: $('vadThresh').value,
     voice: $('voice').value,
@@ -529,11 +530,14 @@
     autoCommit: $('autoCommit').checked,
     deviceId: state.deviceId,
     speakerId: state.speakerId,
+    rawMic: $('rawMic').checked,
+    captureMode: (document.getElementById('captureMode')||{value:'worklet'}).value,
   }));
   $('vadThresh').addEventListener('change', persist);
   $('voice').addEventListener('change', persist);
   $('ptt').addEventListener('change', persist);
   $('autoCommit').addEventListener('change', persist);
+  document.getElementById('captureMode')?.addEventListener('change', () => { persist(); if (state.micActive) { stopMic(); startMic(); } });
   $('rawMic').addEventListener('change', () => { persist(); if (state.micActive) { stopMic(); startMic(); }});
   $('btnUseDefault').addEventListener('click', () => { state.deviceId = null; persist(); if (state.micActive) { stopMic(); } startMic(); });
 

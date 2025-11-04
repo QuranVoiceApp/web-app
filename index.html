@@ -58,6 +58,12 @@
           <button id="btnAutoDetect" title="Scan inputs and pick one with signal">Auto‑Detect Mic</button>
           <button id="btnLoopback" title="Record 1s and play back to verify capture">Loopback 1s</button>
           <button id="btnResumeAudio" title="Resume AudioContext if suspended">Resume Audio</button>
+          <label>Capture Mode
+            <select id="captureMode">
+              <option value="worklet">worklet</option>
+              <option value="script">script</option>
+            </select>
+          </label>
         </div>
         <div class="row">
           <label>Mic Device
