@@ -17,7 +17,9 @@
   const urlParams = new URLSearchParams(location.search);
   const uaStr = (navigator.userAgent || '').toLowerCase();
   const isIOS = /iphone|ipad|ipod/.test(uaStr);
-  const defaultSend = isIOS ? 'binary' : 'json';
+  const isSafari = uaStr.includes('safari') && !uaStr.includes('chrome');
+  const isMobileSafari = isIOS || (isSafari && uaStr.includes('mobile'));
+  const defaultSend = isMobileSafari ? 'binary' : 'json';
   const sendMode = (urlParams.get('send') || defaultSend).toLowerCase(); // 'json' or 'binary'
   const diag = urlParams.get('diag') === '1' || urlParams.get('debug') === 'verbose';
   const urlMode = (urlParams.get('mode') || '').toLowerCase(); // 'worklet'|'script'
@@ -137,7 +139,7 @@
         // Send client version/state for diagnostics and hints (server drops client.* before OpenAI)
         try {
           const ver = (document.currentScript && document.currentScript.src) || 'qvt-web';
-          ws.send(JSON.stringify({ type: 'client.state', client: { app_version: 'web-' + new Date().toISOString(), platform: navigator.userAgent, read_mode: false } }));
+          ws.send(JSON.stringify({ type: 'client.state', client: { app_version: 'web-' + new Date().toISOString(), platform: navigator.userAgent, read_mode: false, capabilities: { binary_send_ok: (sendMode === 'binary'), barge_in_supported: true, mobile: isMobileSafari } } }));
         } catch {}
         // Initialize playback context
         if (!state.playCtx) {
@@ -155,6 +157,43 @@
             state.sinkEl.setSinkId(state.speakerId).then(() => log('speaker set', state.speakerId)).catch(()=>{});
           }
         }
+        // Prepare jitter buffer for TTS playback (smooths network jitter)
+        try {
+          class TtsJitterBuffer {
+            constructor(ctx, destNode, startMs=80, lowMs=60, highMs=180) {
+              this.ctx = ctx; this.dest = destNode || ctx.destination;
+              this.queue = []; this.bufferedMs = 0; this.started = false;
+              this.startMs = startMs; this.lowMs = lowMs; this.highMs = highMs;
+              this.gain = ctx.createGain(); this.gain.connect(this.dest);
+            }
+            setGainLinear(g) { try { this.gain.gain.value = g; } catch {} }
+            pushFloat32Mono24k(f32) {
+              try {
+                const buf = this.ctx.createBuffer(1, f32.length, 24000);
+                buf.copyToChannel(f32, 0);
+                this.queue.push(buf);
+                this.bufferedMs += (buf.length / 24000) * 1000;
+                if (!this.started && this.bufferedMs >= this.startMs) this._drain();
+              } catch {}
+            }
+            _drain() {
+              this.started = true;
+              let when = this.ctx.currentTime;
+              while (this.queue.length) {
+                const b = this.queue.shift();
+                const src = this.ctx.createBufferSource();
+                src.buffer = b; src.connect(this.gain); src.start(when);
+                when += b.length / 24000;
+              }
+              const aheadMs = Math.max(0, (when - this.ctx.currentTime) * 1000);
+              this.bufferedMs = aheadMs;
+              if (this.bufferedMs < this.lowMs) this.started = false;
+            }
+          }
+          const dest = (state.outputSupported && state.sinkDest) ? state.sinkDest : state.playCtx.destination;
+          state.ttsJB = new TtsJitterBuffer(state.playCtx, dest, 80, 60, 180);
+          state.ttsGainNode = state.ttsJB.gain;
+        } catch {}
         // Update session with desired voice and (best-effort) VAD threshold
         const threshold = parseFloat($('vadThresh').value || '0.7');
         const sessionUpdate = {
@@ -239,6 +278,11 @@
   function enqueuePlayback(f32, sr) {
     if (!state.playCtx) return;
     try {
+      // If jitter buffer exists, push to it; else fall back to direct scheduling
+      if (state.ttsJB && typeof state.ttsJB.pushFloat32Mono24k === 'function' && sr === 24000) {
+        state.ttsJB.pushFloat32Mono24k(f32);
+        return;
+      }
       const buf = state.playCtx.createBuffer(1, f32.length, sr);
       buf.copyToChannel(f32, 0);
       const src = state.playCtx.createBufferSource();
@@ -316,6 +360,8 @@
       case 'input_audio_buffer.speech_started':
       case 'input_audio_buffer.speech_ended':
         log('<=', t, JSON.stringify({ ts: msg.ts, threshold: msg.vad_threshold }));
+        try { if (t === 'input_audio_buffer.speech_started') { if (state.ttsGainNode) state.ttsGainNode.gain.value = 0.25; } } catch {}
+        try { if (t === 'input_audio_buffer.speech_ended') { if (state.ttsGainNode) state.ttsGainNode.gain.value = 1.0; } } catch {}
         // Optional auto-commit flow on silence
         if (t === 'input_audio_buffer.speech_ended' && $('autoCommit')?.checked) {
           try {
@@ -673,22 +719,28 @@
           }, 1000);
         } catch {}
       }
-      // Mid-session ambient recalibration (lightweight): every ~45s, when quiet, adjust gate slightly
+      // Mid-session ambient recalibration: every ~60s, sample ~500ms ambient and adjust gently
       try {
         if (state.recalTimer) clearInterval(state.recalTimer);
-        state.recalTimer = setInterval(() => {
+        state.recalTimer = setInterval(async () => {
           try {
-            const buf = new Float32Array(analyser.fftSize);
-            analyser.getFloatTimeDomainData(buf);
-            let peak=0,sum=0; for (let i=0;i<buf.length;i++){ const a=Math.abs(buf[i]); if (a>peak) peak=a; sum+=a*a; }
-            const rms = Math.sqrt(sum/Math.max(1,buf.length));
-            if (peak < 0.03) { // environment appears quiet
-              const newGate = Math.max(0.001, Math.min(0.01, rms * 2));
-              state.gateRms = (state.gateRms != null) ? (state.gateRms*0.9 + newGate*0.1) : newGate;
-              if (diag) log('recal', JSON.stringify({ gateRms: Number(state.gateRms.toFixed(3)) }));
+            const t0 = performance.now();
+            let sum=0, n=0;
+            const tmp = new Float32Array(analyser.fftSize);
+            while ((performance.now()-t0) < 500) {
+              analyser.getFloatTimeDomainData(tmp);
+              let s=0; for (let i=0;i<tmp.length;i++){ const a=tmp[i]; s+=a*a; }
+              const rms = Math.sqrt(s/Math.max(1,tmp.length));
+              sum+=rms; n++; await new Promise(r=>setTimeout(r,30));
             }
+            const amb = n ? (sum/n) : 0.003;
+            const newGate = Math.max(0.001, Math.min(0.01, amb*2));
+            const newTgt  = Math.max(0.06, Math.min(0.18, amb*4));
+            state.gateRms = newGate;
+            state.targetRms = (state.targetRms*0.8) + (newTgt*0.2);
+            if (diag) log('ambient-recal', {amb: Number(amb.toFixed(4)), gate: Number(newGate.toFixed(3)), tgt: Number(state.targetRms.toFixed(3))});
           } catch {}
-        }, 45000);
+        }, 60000);
       } catch {}
       startVisualizer();
       // Auto record+analyse in diag mode
@@ -726,7 +778,10 @@
 
   function buildConstraints() {
     const raw = $('rawMic').checked;
-    const c = { audio: { echoCancellation: !raw, noiseSuppression: !raw, autoGainControl: !raw, channelCount: 1 }, video: false };
+    const sysProc = (urlParams.get('sysProc') || '').toLowerCase();
+    const wantSys = sysProc && (sysProc === '1' || sysProc === 'on' || sysProc === 'true');
+    const useSys = wantSys && !raw; // raw overrides URL
+    const c = { audio: { echoCancellation: true, noiseSuppression: useSys, autoGainControl: useSys, channelCount: 1 }, video: false };
     if (state.deviceId) c.audio.deviceId = { exact: state.deviceId };
     return c;
   }
