@@ -92,7 +92,6 @@
           session: {
             voice: $('voice').value,
             // Best-effort hints; server may accept either
-            vad_threshold: threshold,
             turn_detection: { type: 'server_vad', threshold },
             input_audio_format: 'pcm16',
             input_sample_rate_hz: 24000,
@@ -257,12 +256,14 @@
   }
 
   function float32ToPCM16(float32) {
-    const out = new Int16Array(float32.length);
+    const outBuf = new ArrayBuffer(float32.length * 2);
+    const dv = new DataView(outBuf);
     let clipped = false;
     for (let i = 0; i < float32.length; i++) {
       let s = Math.max(-1, Math.min(1, float32[i]));
       if (Math.abs(s) >= 0.98) clipped = true;
-      out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      const val = s < 0 ? (s * 0x8000) : (s * 0x7FFF);
+      dv.setInt16(i * 2, val, true); // little-endian
     }
     // UI meter update based on RMS/peak of float32
     try {
@@ -275,7 +276,7 @@
       if (state.meterText) state.meterText.textContent = `level: ${pct}% (rms ${rms.toFixed(2)})`;
       if (state.clipEl) state.clipEl.style.display = (clipped || peak > 0.98) ? '' : 'none';
     } catch {}
-    return out.buffer;
+    return outBuf;
   }
 
   async function startMic() {
@@ -284,7 +285,7 @@
     try {
       // Clear any residual buffered audio on server
       try { if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify({ type: 'input_audio_buffer.clear' })); } catch {}
-      const constraints = { audio: { echoCancellation: true, noiseSuppression: true }, video: false };
+      const constraints = { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false };
       if (state.deviceId) constraints.audio.deviceId = { exact: state.deviceId };
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
@@ -301,6 +302,11 @@
           try {
             state.ws.send(pcmBuf);
             metrics.sentAppends += 1; metrics.sentBytesAudio += pcmBuf.byteLength; renderMetrics();
+            if (metrics.sentAppends <= 3 || metrics.sentAppends % 50 === 0) {
+              const n = ds.length; let peak = 0, sum = 0; for (let i = 0; i < n; i++){ const a = Math.abs(ds[i]); peak = Math.max(peak, a); sum += a*a; }
+              const rms = Math.sqrt(sum / Math.max(1,n));
+              log('=> audio', `bytes=${pcmBuf.byteLength} peak=${peak.toFixed(2)} rms=${rms.toFixed(2)} buffered=${state.ws.bufferedAmount}`);
+            }
           } catch {}
         }
       };
@@ -379,7 +385,6 @@
       type: 'session.update',
       session: {
         voice: $('voice').value,
-        vad_threshold: threshold,
         turn_detection: { type: 'server_vad', threshold },
         input_audio_format: 'pcm16',
         input_sample_rate_hz: 24000,
