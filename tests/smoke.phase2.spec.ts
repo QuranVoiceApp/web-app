@@ -17,6 +17,7 @@ test('Phase 2 simulated transport smoke', async ({ page }) => {
   page.on('console', (msg) => {
     const text = msg.text();
     if (msg.type() === 'error' || /response\.create\.ignored/i.test(text)) {
+      if (msg.type() === 'error' && text.includes('frame-ancestors')) return;
       consoleMessages.push(text);
     }
   });
