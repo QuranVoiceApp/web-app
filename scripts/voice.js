@@ -199,7 +199,7 @@
   const scheduleAutoStart = () => {
     if (!autoStart || scheduleAutoStart._ran) return;
     scheduleAutoStart._ran = true;
-    (async () => {
+    setTimeout(async () => {
       try {
         if (!state?.ws || state.ws.readyState !== 1) await connect();
         for (let attempts = 0; attempts < 50; attempts += 1) {
@@ -210,7 +210,7 @@
       } catch (err) {
         console?.error?.('autoStart failed', err);
       }
-    })();
+    }, 0);
   };
   scheduleAutoStart._ran = false;
 
