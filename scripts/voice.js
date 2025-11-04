@@ -41,6 +41,24 @@
     nzSamples: 0,
     totalSamples: 0,
   };
+  // Local inactivity commit helper (speeds up turn-taking on browsers where server VAD may lag)
+  function armInactivityCommit() {
+    try {
+      if (state.inactivityTimer) clearTimeout(state.inactivityTimer);
+      state.inactivityTimer = setTimeout(() => {
+        try {
+          if (state.ws && state.ws.readyState === 1) {
+            // Only commit if some audio was sent recently
+            if ((Date.now() - (state.lastAudioSentAt||0)) > 350 && (metrics.sentAppends||0) > 0) {
+              state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+              state.ws.send(JSON.stringify({ type: 'response.create' }));
+              log('auto-commit (inactivity)');
+            }
+          }
+        } catch {}
+      }, 450);
+    } catch {}
+  }
   const renderMetrics = () => {
     const m = $('metrics'); if (!m) return;
     const nzPct = metrics.totalSamples ? Math.round((metrics.nzSamples / metrics.totalSamples) * 100) : 0;
@@ -497,7 +515,7 @@
                 const evt = { type: 'input_audio_buffer.append', audio: b64 };
                 state.ws.send(JSON.stringify(evt));
               }
-              metrics.sentAppends += 1; metrics.sentBytesAudio += pcmBuf.byteLength; renderMetrics();
+              metrics.sentAppends += 1; metrics.sentBytesAudio += pcmBuf.byteLength; state.lastAudioSentAt = Date.now(); renderMetrics();
               if (metrics.sentAppends <= 3 || metrics.sentAppends % 50 === 0) {
                 // Quick stats from the chunk we sent
                 let peak = 0, sum = 0; for (let i = 0; i < view.length; i++){ const a = Math.abs(view[i]); peak = Math.max(peak, a); sum += a*a; }
@@ -506,6 +524,8 @@
               }
             } catch {}
           }
+          // Arm quick inactivity-based commit after each send; server VAD will still drive create_response if enabled
+          armInactivityCommit();
         }
         // Preserve leftover samples for next frame
         carry = (offset < combined.length) ? combined.subarray(offset).slice(0) : new Float32Array(0);
