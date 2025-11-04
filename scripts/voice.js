@@ -89,12 +89,14 @@
         const threshold = parseFloat($('vadThresh').value || '0.7');
         const sessionUpdate = {
           type: 'session.update',
-          voice: $('voice').value,
-          // Best-effort hints; server may accept either
-          vad_threshold: threshold,
-          turn_detection: { type: 'server_vad', threshold },
-          input_audio_format: 'pcm16',
-          input_sample_rate_hz: 24000,
+          session: {
+            voice: $('voice').value,
+            // Best-effort hints; server may accept either
+            vad_threshold: threshold,
+            turn_detection: { type: 'server_vad', threshold },
+            input_audio_format: 'pcm16',
+            input_sample_rate_hz: 24000,
+          }
         };
         try { ws.send(JSON.stringify(sessionUpdate)); } catch {}
 
@@ -179,11 +181,10 @@
       case 'response.created':
         $('transcript').textContent = '';
         break;
-      case 'response.audio_transcript.delta': {
-        const text = msg.delta || '';
-        appendTranscript(text, false);
+      // Ignore raw OpenAI transcript deltas to avoid double-printing;
+      // the proxy also emits transcript_stream which we display.
+      case 'response.audio_transcript.delta':
         break;
-      }
       case 'response.audio_transcript.done': {
         appendTranscript('\n', true);
         break;
@@ -200,6 +201,13 @@
           const { f32 } = base64ToFloat32(b64, msg.sample_rate_hz || 24000);
           metrics.recvAudioChunks += 1; metrics.recvAudioBytes += (b64.length * 3) / 4; renderMetrics();
           enqueuePlayback(f32, msg.sample_rate_hz || 24000);
+        }
+        break;
+      }
+      case 'session.updated': {
+        const ia = msg.ingress_audio;
+        if (ia && typeof ia === 'object') {
+          log('<= ingress', `chunks=${ia.chunks} bytes=${ia.bytes}`);
         }
         break;
       }
@@ -248,19 +256,13 @@
     return out;
   }
 
-  function bufToBase64PCM16(float32) {
-    const pcm16 = new Int16Array(float32.length);
+  function float32ToPCM16(float32) {
+    const out = new Int16Array(float32.length);
+    let clipped = false;
     for (let i = 0; i < float32.length; i++) {
       let s = Math.max(-1, Math.min(1, float32[i]));
-      pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-    }
-    let bin = '';
-    let clipped = false;
-    for (let i = 0; i < pcm16.length; i++) {
-      let val = pcm16[i];
-      if (Math.abs(val) >= 0x7FFF) clipped = true;
-      if (val < 0) val += 0x10000;
-      bin += String.fromCharCode(val & 0xff, val >> 8);
+      if (Math.abs(s) >= 0.98) clipped = true;
+      out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
     }
     // UI meter update based on RMS/peak of float32
     try {
@@ -273,7 +275,7 @@
       if (state.meterText) state.meterText.textContent = `level: ${pct}% (rms ${rms.toFixed(2)})`;
       if (state.clipEl) state.clipEl.style.display = (clipped || peak > 0.98) ? '' : 'none';
     } catch {}
-    return btoa(bin);
+    return out.buffer;
   }
 
   async function startMic() {
@@ -292,14 +294,13 @@
       source.connect(analyser); source.connect(processor); processor.connect(ctx.destination);
       processor.onaudioprocess = (e) => {
         const input = e.inputBuffer.getChannelData(0);
-        // Downsample to 24 kHz and send as base64 PCM16 JSON event
+        // Downsample to 24 kHz and send as raw PCM16 binary frames
         const ds = downsample48kTo24k(input);
-        const b64 = bufToBase64PCM16(ds);
+        const pcmBuf = float32ToPCM16(ds);
         if (state.ws && state.ws.readyState === 1) {
           try {
-            const evt = { type: 'input_audio_buffer.append', audio: b64 };
-            state.ws.send(JSON.stringify(evt));
-            metrics.sentAppends += 1; metrics.sentBytesAudio += (b64.length * 3) / 4; renderMetrics();
+            state.ws.send(pcmBuf);
+            metrics.sentAppends += 1; metrics.sentBytesAudio += pcmBuf.byteLength; renderMetrics();
           } catch {}
         }
       };
@@ -376,11 +377,13 @@
     const threshold = parseFloat($('vadThresh').value || '0.7');
     const payload = {
       type: 'session.update',
-      voice: $('voice').value,
-      vad_threshold: threshold,
-      turn_detection: { type: 'server_vad', threshold },
-      input_audio_format: 'pcm16',
-      input_sample_rate_hz: 24000,
+      session: {
+        voice: $('voice').value,
+        vad_threshold: threshold,
+        turn_detection: { type: 'server_vad', threshold },
+        input_audio_format: 'pcm16',
+        input_sample_rate_hz: 24000,
+      }
     };
     try { state.ws.send(JSON.stringify(payload)); log('=> session.update', JSON.stringify({ voice: payload.voice, threshold })); } catch {}
   };
