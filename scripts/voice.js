@@ -311,6 +311,7 @@
           }
           const f32 = new Float32Array(i16.length);
           for (let i=0;i<i16.length;i++) f32[i] = Math.max(-1, i16[i] / 32768);
+          try { metrics.recvAudioChunks += 1; metrics.recvAudioBytes += i16.byteLength; renderMetrics(); if (diag) log('delta(output_audio)', String(b64.length)); } catch {}
           enqueuePlayback(f32, msg.sample_rate_hz || 24000);
         }
       } catch (e) { log('audio.decode.error', String(e)); }
@@ -374,6 +375,12 @@
         log('<=', t);
         try { if (state.ttsGainNode) state.ttsGainNode.gain.value = 1.0; } catch {}
         break;
+      case 'response.cancelled':
+      case 'response.canceled':
+      case 'response.cancel':
+        log('<=', t);
+        try { if (state.ttsGainNode) state.ttsGainNode.gain.value = 1.0; } catch {}
+        break;
       case 'session.no_audio_ingress@v1':
         log('<= no_audio_ingress', JSON.stringify(msg));
         state.eventCounts = state.eventCounts || {}; state.eventCounts['no_audio_ingress'] = (state.eventCounts['no_audio_ingress']||0)+1;
@@ -394,9 +401,11 @@
         }
         break;
       default:
-        // Keep concise, but log unknown types
-        if (t) log('<=', t);
-        else log('<=', raw.slice(0, 160));
+        // Keep concise, but log unknown types (more verbose in diag)
+        if (t) {
+          if (diag) log('UNHANDLED', t, raw.slice(0, 160));
+          else log('<=', t);
+        } else log('<=', raw.slice(0, 160));
     }
   }
 
