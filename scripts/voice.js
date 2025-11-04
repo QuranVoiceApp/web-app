@@ -15,13 +15,25 @@
   const wsUrl = (window.Env && window.Env.WS_URL) || 'wss://quran.asimo.io/realtime/v1/ws';
   $('wsUrl').textContent = wsUrl;
   const urlParams = new URLSearchParams(location.search);
+  const ffTokens = (urlParams.get('ff') || '').split(',').filter(Boolean);
+  const FF = (() => {
+    const set = new Set(ffTokens);
+    return {
+      seq_json: set.has('seq_json'),
+      wt: set.has('wt'),
+      wasm_vad: set.has('wasm_vad'),
+      diag: set.has('diag') || urlParams.get('diag') === '1',
+      telemetry: !set.has('no_telemetry'),
+      wake_lock: !set.has('no_wake_lock'),
+    };
+  })();
   const uaStr = (navigator.userAgent || '').toLowerCase();
   const isIOS = /iphone|ipad|ipod/.test(uaStr);
   const isSafari = uaStr.includes('safari') && !uaStr.includes('chrome');
   const isMobileSafari = isIOS || (isSafari && uaStr.includes('mobile'));
   const defaultSend = 'binary';
   const sendMode = (urlParams.get('send') || defaultSend).toLowerCase(); // 'json' or 'binary'
-  const diag = urlParams.get('diag') === '1' || urlParams.get('debug') === 'verbose';
+  const diag = FF.diag || urlParams.get('debug') === 'verbose';
   const urlMode = (urlParams.get('mode') || '').toLowerCase(); // 'worklet'|'script'
   const urlRaw = urlParams.get('raw') === '1' || urlParams.get('raw') === 'true';
   const urlDeviceLabel = urlParams.get('deviceLabel') || urlParams.get('device') || '';
@@ -56,7 +68,8 @@
           if (state.ws && state.ws.readyState === 1) {
             // Only commit if some audio was sent recently and we have ≥100ms buffered since last commit
             const ageOk = (Date.now() - (state.lastAudioSentAt||0)) > (commitDelay - 50);
-            const durOk = (state.msSinceLastCommit||0) >= 100;
+            const win = commitWindowMs();
+            const durOk = (state.msSinceLastCommit||0) >= win;
             if (ageOk && durOk && (metrics.sentAppends||0) > 0) {
               state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
               state.msSinceLastCommit = 0;
@@ -73,7 +86,9 @@
   const renderMetrics = () => {
     const m = $('metrics'); if (!m) return;
     const nzPct = metrics.totalSamples ? Math.round((metrics.nzSamples / metrics.totalSamples) * 100) : 0;
-    m.textContent = `sentAppends=${metrics.sentAppends} sentBytesAudio=${metrics.sentBytesAudio}B · recvAudioChunks=${metrics.recvAudioChunks} recvAudioBytes=${metrics.recvAudioBytes}B · transcriptChars=${metrics.recvTranscriptChars} · nz=${nzPct}%`;
+    const rttDisplay = Math.round(state.net.rttMsEwma || 0);
+    const winDisplay = commitWindowMs();
+    m.textContent = `sentAppends=${metrics.sentAppends} sentBytesAudio=${metrics.sentBytesAudio}B · recvAudioChunks=${metrics.recvAudioChunks} recvAudioBytes=${metrics.recvAudioBytes}B · transcriptChars=${metrics.recvTranscriptChars} · nz=${nzPct}% · rtt=${rttDisplay}ms · commitWin=${winDisplay}ms`;
   };
 
   const state = {
@@ -104,6 +119,42 @@
     targetRms: defaultTargetRms,
     gateRms: null, // dynamically set after ambient calibration
     stragglerTimer: null,
+    net: { rttMsEwma: 80, minCommitMs: 100, maxCommitMs: 150, serverInHz: 24000, audioOutHz: 24000, supportsBargeIn: false },
+    _pingTimer: null,
+    _lastPing: null,
+    _seq: 0,
+  };
+
+  const ewma = (prev, value, alpha = 0.2) => (prev == null ? value : (alpha * value) + ((1 - alpha) * prev));
+  const commitWindowMs = () => {
+    const rtt = Math.max(0, Math.min(400, state.net.rttMsEwma || 0));
+    const lower = state.net.minCommitMs ?? 100;
+    const upper = state.net.maxCommitMs ?? 150;
+    return Math.max(lower, Math.min(upper, 80 + Math.floor(rtt / 4)));
+  };
+  const applyNegotiation = (negotiation) => {
+    if (!negotiation || typeof negotiation !== 'object') return;
+    const next = {
+      serverInHz: negotiation.serverInHz ?? state.net.serverInHz ?? 24000,
+      minCommitMs: negotiation.minCommitMs ?? state.net.minCommitMs ?? 100,
+      maxCommitMs: negotiation.maxCommitMs ?? state.net.maxCommitMs ?? 150,
+      audioOutHz: negotiation.audioOutHz ?? state.net.audioOutHz ?? 24000,
+      supportsBargeIn: negotiation.supportsBargeIn ?? state.net.supportsBargeIn ?? false,
+      rttMsEwma: state.net.rttMsEwma ?? 80,
+    };
+    state.net = Object.assign({}, state.net, next);
+    if (state.net.serverInHz) state.serverInHz = state.net.serverInHz;
+    try { renderMetrics(); } catch {}
+  };
+  const startDiagPinger = () => {
+    if (!FF.diag) return;
+    if (state._pingTimer) return;
+    state._pingTimer = setInterval(() => {
+      try {
+        state._lastPing = performance.now();
+        state.ws?.send(JSON.stringify({ type: 'client.ping', ts: Date.now() }));
+      } catch {}
+    }, 5000);
   };
 
   const setConn = (ok) => {
@@ -141,12 +192,15 @@
         state.connected = true;
         setConn(true);
         log('WebSocket open');
+        startDiagPinger();
         try { state.playCtx?.resume(); } catch {}
-        // Send client version/state for diagnostics and hints (server drops client.* before OpenAI)
-        try {
-          const ver = (document.currentScript && document.currentScript.src) || 'qvt-web';
-          ws.send(JSON.stringify({ type: 'client.state', client: { app_version: 'web-' + new Date().toISOString(), platform: navigator.userAgent, read_mode: false, capabilities: { binary_send_ok: (sendMode === 'binary'), barge_in_supported: true, mobile: isMobileSafari } } }));
-        } catch {}
+        // Send client state only when diagnostics enabled
+        if (FF.diag) {
+          try {
+            const ver = (document.currentScript && document.currentScript.src) || 'qvt-web';
+            ws.send(JSON.stringify({ type: 'client.state', client: { app_version: 'web-' + new Date().toISOString(), platform: navigator.userAgent, read_mode: false, capabilities: { binary_send_ok: (sendMode === 'binary'), barge_in_supported: true, mobile: isMobileSafari } } }));
+          } catch {}
+        }
         // Initialize playback context
         if (!state.playCtx) {
           state.playCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -264,6 +318,8 @@
         if (state.ws === ws) {
           state.ws = null; state.connected = false; setConn(false);
           if (state.micActive) stopMic();
+          if (state._pingTimer) { clearInterval(state._pingTimer); state._pingTimer = null; }
+          state._lastPing = null;
         }
       };
     } catch (e) {
@@ -337,6 +393,18 @@
       return;
     }
     switch (t) {
+      case 'server.pong': {
+        if (state._lastPing != null) {
+          const rtt = performance.now() - state._lastPing;
+          state.net.rttMsEwma = ewma(state.net.rttMsEwma, rtt);
+          renderMetrics();
+        }
+        break;
+      }
+      case 'session.started':
+        applyNegotiation(msg.negotiation);
+        startDiagPinger();
+        break;
       case 'session.audio_status@v1':
         if (msg.input_sample_rate_hz) state.serverInHz = msg.input_sample_rate_hz;
         log('<= audio_status', `in=${msg.input_sample_rate_hz} out=${msg.output_sample_rate_hz}`);
@@ -382,7 +450,8 @@
         break;
       }
       case 'session.updated': {
-        const ia = msg.ingress_audio;
+        applyNegotiation(msg.negotiation);
+        const ia = msg.ingress_audio || msg.ingress;
         if (ia && typeof ia === 'object') {
           log('<= ingress', `chunks=${ia.chunks} bytes=${ia.bytes}`);
           try { state.lastIngress = { chunks: ia.chunks||0, bytes: ia.bytes||0, ts: ia.last_ts||Date.now() }; } catch {}
@@ -427,7 +496,7 @@
         if (t === 'input_audio_buffer.speech_ended' && $('autoCommit')?.checked) {
           try {
             if (state.ws && state.ws.readyState === 1) {
-              if ((state.msSinceLastCommit||0) >= 120) {
+              if ((state.msSinceLastCommit||0) >= commitWindowMs()) {
                 state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
                 state.msSinceLastCommit = 0;
                 if (!state.responseActive) {
@@ -511,6 +580,7 @@
     try {
       // Clear any residual buffered audio on server
       try { if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify({ type: 'input_audio_buffer.clear' })); } catch {}
+      state._seq = 0;
       const constraints = buildConstraints();
       try { log('getUserMedia constraints', JSON.stringify(constraints)); } catch {}
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -639,7 +709,11 @@
               // Backpressure handling: if buffered is too large, skip sending
               const ba = state.ws.bufferedAmount || 0;
               if (ba > MAX_BUFFERED * 4) { if (diag) log('backpressure drop', String(ba)); continue; }
-              if (sendMode === 'binary') {
+              if (FF.seq_json) {
+                const b64 = arrayBufferToBase64(pcmBuf);
+                state._seq = (state._seq || 0) + 1;
+                state.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', seq: state._seq, base64: b64 }));
+              } else if (sendMode === 'binary') {
                 state.ws.send(pcmBuf);
               } else {
                 const b64 = arrayBufferToBase64(pcmBuf);
@@ -665,7 +739,7 @@
           state.stragglerTimer = setTimeout(() => {
             try {
               if (state.ws && state.ws.readyState === 1) {
-                if ((state.msSinceLastCommit||0) >= 100) {
+                if ((state.msSinceLastCommit||0) >= commitWindowMs()) {
                   state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
                   state.msSinceLastCommit = 0;
                   if (!state.responseActive) {
@@ -714,8 +788,15 @@
                 if (state.ws && state.ws.readyState === 1) {
                   try {
                     const ba = state.ws.bufferedAmount || 0; if (ba > MAX_BUFFERED * 4) { if (diag) log('backpressure drop', String(ba)); flushTimer = null; return; }
-                    if (sendMode === 'binary') state.ws.send(pcmBuf);
-                    else state.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: arrayBufferToBase64(pcmBuf) }));
+                    if (FF.seq_json) {
+                      const b64 = arrayBufferToBase64(pcmBuf);
+                      state._seq = (state._seq || 0) + 1;
+                      state.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', seq: state._seq, base64: b64 }));
+                    } else if (sendMode === 'binary') {
+                      state.ws.send(pcmBuf);
+                    } else {
+                      state.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: arrayBufferToBase64(pcmBuf) }));
+                    }
                     metrics.sentAppends += 1; metrics.sentBytesAudio += pcmBuf.byteLength; state.lastAudioSentAt = Date.now(); renderMetrics();
                     // Track commit budget (ms) for leftover flush path as well
                     state.msSinceLastCommit = (state.msSinceLastCommit || 0) + Math.round((view.length / (state.serverInHz||24000)) * 1000);
