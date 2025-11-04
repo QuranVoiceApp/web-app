@@ -50,7 +50,7 @@ jobs:
       - name: prepare artifact (static)
         run: |
           mkdir -p _site
-          cp -R * _site/
+          rsync -a --exclude _site/ ./ _site/
       - name: upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
