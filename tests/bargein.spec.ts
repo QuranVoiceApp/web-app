@@ -1,6 +1,9 @@
 import { test, expect } from '@playwright/test';
 
-const TARGET_URL = process.env.PHASE3_URL || 'https://app.asimo.io/?ff=barge_in&diag=1';
+const sha = process.env.SHORTSHA || process.env.GITHUB_SHA || 'dev';
+const shortSha = sha.slice(0, 7);
+const BASE_URL = process.env.BASE_URL || 'https://app.asimo.io/';
+const TARGET_URL = process.env.PHASE3_URL || `${BASE_URL}?ff=barge_in,seq_json,fir_halfband,drift_comp,watchdog,sim_input&diag=1&auto=1&v=${shortSha}`;
 
 const hasMessage = (messages: unknown[], needle: string) =>
   messages.some((entry) => typeof entry === 'string' && entry.includes(needle));

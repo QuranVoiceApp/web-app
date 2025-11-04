@@ -35,6 +35,39 @@
   try { window.__qvtFlagTokens = ffTokens.slice(); } catch {}
   const activeFlags = ffTokens.join(',') || 'none';
 
+  // Stable diagnostics/test surface exported for CI and smokes.
+  try {
+    window.__qvtSession = window.__qvtSession || {};
+    window.__qvtMetrics = window.__qvtMetrics || {};
+    window.__qvtTest = Object.assign(window.__qvtTest || {}, {});
+  } catch {}
+
+  (function initQvtReady() {
+    if (typeof window === 'undefined') return;
+    let resolver = null;
+    window.__qvtReady = window.__qvtReady === true;
+    Object.assign(window.__qvtTest, {
+      ready: () => window.__qvtReady === true,
+      awaitReady: () => new Promise((resolve) => {
+        if (window.__qvtReady === true) return resolve(true);
+        resolver = resolve;
+      }),
+      _markReady: () => {
+        if (window.__qvtReady === true) return;
+        window.__qvtReady = true;
+        if (typeof resolver === 'function') {
+          resolver(true);
+          resolver = null;
+        }
+      },
+    });
+  })();
+
+  const exportNegotiation = (negotiation) => {
+    try { window.__qvtSession.negotiation = negotiation || null; } catch {}
+    try { window.__qvtTest._markReady(); } catch {}
+  };
+
   const emitVersionBanner = () => {
     const fallback = `QVT web dev (${new Date().toISOString().slice(0, 10)})`;
     const logBanner = (msg, meta = {}) => {
@@ -88,6 +121,7 @@
   const defaultTargetRms = Math.max(0.01, parseFloat(urlParams.get('targetRms') || '0.12'));
   const agcRate = Math.max(0.001, parseFloat(urlParams.get('agcRate') || '0.02')); // adaptation per chunk
   const limiterThr = Math.min(0.999, Math.max(0.5, parseFloat(urlParams.get('lim') || '0.9')));
+  const autoStart = urlParams.get('auto') === '1';
   log('sendMode', sendMode);
   if (diag) log('diag', 'on');
   if (diag && softwareGain !== 1) log('gain', String(softwareGain));
@@ -133,26 +167,60 @@
     const driftDisplay = (FF.drift_comp && typeof state.driftPpm === 'number') ? ` · drift=${Math.round(state.driftPpm)}ppm` : '';
     const jitterDisplay = state.jitterMs ? ` · jitter=${Math.round(state.jitterMs)}ms` : '';
     m.textContent = `sentAppends=${metrics.sentAppends} sentBytesAudio=${metrics.sentBytesAudio}B · recvAudioChunks=${metrics.recvAudioChunks} recvAudioBytes=${metrics.recvAudioBytes}B · transcriptChars=${metrics.recvTranscriptChars} · nz=${nzPct}% · rtt=${rttDisplay}ms · commitWin=${winDisplay}ms${driftDisplay}${jitterDisplay}`;
+    try { $('commitWin').textContent = String(winDisplay); } catch {}
+    try { $('rttEwma').textContent = String(rttDisplay); } catch {}
+    state.commitWinMs = winDisplay;
     try {
       if (typeof window !== 'undefined') {
-        window.__qvtMetrics = {
+        window.__qvtMetrics = Object.assign({}, window.__qvtMetrics, {
+          commitWindowMs: winDisplay,
+          commitWinMs: winDisplay,
+          rttMsEwma: state?.net?.rttMsEwma ?? null,
+          rttMs: rttDisplay,
+          jitterDepthMs: state.jitterMs ?? null,
+          jitterMs: state.jitterMs ?? null,
+          driftPpm: state.driftPpm || 0,
           sentAppends: metrics.sentAppends,
           sentBytesAudio: metrics.sentBytesAudio,
           recvAudioChunks: metrics.recvAudioChunks,
           recvAudioBytes: metrics.recvAudioBytes,
-          rttMs: rttDisplay,
-          commitWinMs: winDisplay,
-          driftPpm: state.driftPpm || 0,
-          jitterMs: state.jitterMs || 0,
+          workletStalls: state.workletStalls || 0,
+          watchdogRecovers: state.watchdogRecovers || 0,
           bargeInEvents: state.bargeInEvents || 0,
           duckTransitions: state.duckTransitions || 0,
           resumeEvents: state.resumeEvents || 0,
           duckLatencyMs: state.duckLatencyMs || 0,
           cancelEvents: state.cancelEvents || 0,
-        };
+        });
       }
     } catch {}
   };
+
+  const scheduleAutoStart = () => {
+    if (!autoStart || scheduleAutoStart._ran) return;
+    scheduleAutoStart._ran = true;
+    (async () => {
+      try {
+        if (!state?.ws || state.ws.readyState !== 1) await connect();
+        for (let attempts = 0; attempts < 50; attempts += 1) {
+          if (state?.connected && state.ws?.readyState === 1) break;
+          await new Promise((res) => setTimeout(res, 200));
+        }
+        if (state?.connected && !state?.micActive) await startMic();
+      } catch (err) {
+        console?.error?.('autoStart failed', err);
+      }
+    })();
+  };
+  scheduleAutoStart._ran = false;
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('DOMContentLoaded', () => {
+      if (autoStart) scheduleAutoStart();
+    }, { once: true });
+  }
+
+  if (autoStart) scheduleAutoStart();
 
   const setTtsGain = (value) => {
     try {
@@ -230,6 +298,7 @@
   };
 
   const state = {
+    commitWinMs: null,
     ws: null,
     mediaStream: null,
     audioContext: null,
@@ -561,11 +630,13 @@
         }
         break;
       }
-      case 'session.started':
+      case 'session.started': {
         applyNegotiation(msg.negotiation);
-        try { if (typeof window !== 'undefined') window.__qvtSession = { negotiation: msg.negotiation || null, lastType: 'session.started' }; } catch {}
+        exportNegotiation(msg.negotiation);
+        try { window.__qvtSession.lastType = 'session.started'; } catch {}
         startDiagPinger();
         break;
+      }
       case 'session.audio_status@v1':
         if (msg.input_sample_rate_hz) state.serverInHz = msg.input_sample_rate_hz;
         log('<= audio_status', `in=${msg.input_sample_rate_hz} out=${msg.output_sample_rate_hz}`);
@@ -611,8 +682,11 @@
         break;
       }
       case 'session.updated': {
-        applyNegotiation(msg.negotiation);
-        try { if (typeof window !== 'undefined') window.__qvtSession = { negotiation: msg.negotiation || null, lastType: 'session.updated' }; } catch {}
+        if (msg.negotiation) {
+          applyNegotiation(msg.negotiation);
+          exportNegotiation(msg.negotiation);
+        }
+        try { window.__qvtSession.lastType = 'session.updated'; } catch {}
         const ia = msg.ingress_audio || msg.ingress;
         if (ia && typeof ia === 'object') {
           log('<= ingress', `chunks=${ia.chunks} bytes=${ia.bytes}`);
