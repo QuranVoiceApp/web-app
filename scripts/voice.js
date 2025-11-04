@@ -19,7 +19,7 @@
   const isIOS = /iphone|ipad|ipod/.test(uaStr);
   const isSafari = uaStr.includes('safari') && !uaStr.includes('chrome');
   const isMobileSafari = isIOS || (isSafari && uaStr.includes('mobile'));
-  const defaultSend = isMobileSafari ? 'binary' : 'json';
+  const defaultSend = 'binary';
   const sendMode = (urlParams.get('send') || defaultSend).toLowerCase(); // 'json' or 'binary'
   const diag = urlParams.get('diag') === '1' || urlParams.get('debug') === 'verbose';
   const urlMode = (urlParams.get('mode') || '').toLowerCase(); // 'worklet'|'script'
@@ -364,6 +364,13 @@
         appendTranscript(text, !!msg.is_final);
         break;
       }
+      case 'response.output_item.added':
+        // Some models may not emit response.created early; treat first output item as active
+        state.responseActive = true;
+        break;
+      case 'response.output_item.done':
+        state.responseActive = false;
+        break;
       case 'response.audio.delta': {
         // Support multiple possible payload keys
         const b64 = msg.delta || msg.audio || msg.data || msg.chunk || msg.output_audio_chunk;
@@ -658,7 +665,7 @@
           state.stragglerTimer = setTimeout(() => {
             try {
               if (state.ws && state.ws.readyState === 1) {
-                if ((state.msSinceLastCommit||0) >= 120) {
+                if ((state.msSinceLastCommit||0) >= 100) {
                   state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
                   state.msSinceLastCommit = 0;
                   if (!state.responseActive) {
@@ -710,6 +717,8 @@
                     if (sendMode === 'binary') state.ws.send(pcmBuf);
                     else state.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: arrayBufferToBase64(pcmBuf) }));
                     metrics.sentAppends += 1; metrics.sentBytesAudio += pcmBuf.byteLength; state.lastAudioSentAt = Date.now(); renderMetrics();
+                    // Track commit budget (ms) for leftover flush path as well
+                    state.msSinceLastCommit = (state.msSinceLastCommit || 0) + Math.round((view.length / (state.serverInHz||24000)) * 1000);
                   } catch {}
                 }
                 armInactivityCommit();
