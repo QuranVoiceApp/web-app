@@ -58,5 +58,50 @@
     }
   }
 
-  return { HALF_BAND_COEFFS, FirFilter };
+  class DriftTracker {
+    constructor() {
+      this.reset();
+    }
+
+    reset(startMs) {
+      this.captureStartedAt = Number.isFinite(startMs) ? startMs : null;
+      this.accumulator = 0;
+      this.capturedSamples = 0;
+      this.driftPpm = 0;
+    }
+
+    ingest(chunkLength, nowMs, targetHz) {
+      if (!Number.isFinite(chunkLength) || chunkLength <= 0) return { adjust: 0, driftPpm: this.driftPpm };
+      if (!Number.isFinite(targetHz) || targetHz <= 0) targetHz = 24000;
+      if (!Number.isFinite(nowMs)) nowMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      if (this.captureStartedAt == null) this.captureStartedAt = nowMs;
+      const elapsedMs = nowMs - this.captureStartedAt;
+      const expected = (elapsedMs / 1000) * targetHz;
+      const projected = this.capturedSamples + chunkLength;
+      const error = projected - expected;
+      const acc = this.accumulator + error;
+      let adjust = 0;
+      if (acc > 1) { adjust = -1; this.accumulator = acc - 1; }
+      else if (acc < -1) { adjust = 1; this.accumulator = acc + 1; }
+      else { this.accumulator = acc; }
+      const finalLength = chunkLength + adjust;
+      if (finalLength > 0) {
+        this.capturedSamples += finalLength;
+      }
+      const denom = Math.max(expected, 1);
+      this.driftPpm = ((this.capturedSamples - expected) / denom) * 1e6;
+      return { adjust, driftPpm: this.driftPpm };
+    }
+
+    getState() {
+      return {
+        captureStartedAt: this.captureStartedAt,
+        accumulator: this.accumulator,
+        capturedSamples: this.capturedSamples,
+        driftPpm: this.driftPpm,
+      };
+    }
+  }
+
+  return { HALF_BAND_COEFFS, FirFilter, DriftTracker };
 });

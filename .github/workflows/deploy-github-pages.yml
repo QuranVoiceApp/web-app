@@ -15,7 +15,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  phase2-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: run phase 2 unit tests
+        run: |
+          set -o pipefail
+          npm run test:phase2 | tee phase2-unit.log
+      - name: upload phase 2 unit log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase2-unit-${{ github.run_id }}
+          path: phase2-unit.log
+
   build:
+    needs: phase2-unit
     runs-on: ubuntu-latest
     steps:
       - name: checkout
