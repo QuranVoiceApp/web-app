@@ -32,13 +32,14 @@ test('Phase 1 transport sanity', async ({ page }) => {
   expect(negotiation.minCommitMs).toBeGreaterThan(0);
   expect(negotiation.maxCommitMs).toBeGreaterThanOrEqual(negotiation.minCommitMs);
 
-  await page.waitForFunction((minCommit: number, maxCommit: number) => {
+  await page.waitForFunction((data: { minCommit: number; maxCommit: number }) => {
+    const { minCommit, maxCommit } = data;
     const metrics = (window as any).__qvtMetrics;
     if (!metrics) return false;
     if (typeof metrics.commitWinMs !== 'number') return false;
     if (metrics.commitWinMs < minCommit || metrics.commitWinMs > maxCommit) return false;
     return true;
-  }, negotiation.minCommitMs, negotiation.maxCommitMs, { timeout: 20_000 });
+  }, { minCommit: negotiation.minCommitMs, maxCommit: negotiation.maxCommitMs }, { timeout: 20_000 });
 
   const metrics = await page.evaluate(() => (window as any).__qvtMetrics);
   expect(metrics.sentAppends).toBeGreaterThanOrEqual(4);

@@ -45,7 +45,8 @@ test('Phase 2 simulated transport smoke', async ({ page }) => {
   expect(negotiation.minCommitMs).toBeGreaterThan(0);
   expect(negotiation.maxCommitMs).toBeGreaterThanOrEqual(negotiation.minCommitMs);
 
-  await page.waitForFunction((minCommit: number, maxCommit: number, bounds: { min: number; max: number }) => {
+  await page.waitForFunction((data: { minCommit: number; maxCommit: number; bounds: { min: number; max: number } }) => {
+    const { minCommit, maxCommit, bounds } = data;
     const metrics = (window as any).__qvtMetrics;
     if (!metrics) return false;
     if (metrics.sentAppends < 6) return false;
@@ -53,7 +54,7 @@ test('Phase 2 simulated transport smoke', async ({ page }) => {
     if (metrics.commitWinMs < minCommit || metrics.commitWinMs > maxCommit) return false;
     if (typeof metrics.jitterMs === 'number' && (metrics.jitterMs < bounds.min || metrics.jitterMs > bounds.max)) return false;
     return true;
-  }, negotiation.minCommitMs, negotiation.maxCommitMs, jitterBounds, { timeout: 25_000 });
+  }, { minCommit: negotiation.minCommitMs, maxCommit: negotiation.maxCommitMs, bounds: jitterBounds }, { timeout: 25_000 });
 
   const metrics = await page.evaluate(() => (window as any).__qvtMetrics);
   expect(metrics.commitWinMs).toBeGreaterThanOrEqual(negotiation.minCommitMs);
