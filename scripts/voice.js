@@ -15,7 +15,10 @@
   const wsUrl = (window.Env && window.Env.WS_URL) || 'wss://quran.asimo.io/realtime/v1/ws';
   $('wsUrl').textContent = wsUrl;
   const urlParams = new URLSearchParams(location.search);
-  const sendMode = (urlParams.get('send') || 'json').toLowerCase(); // 'json' (default) or 'binary'
+  const uaStr = (navigator.userAgent || '').toLowerCase();
+  const isIOS = /iphone|ipad|ipod/.test(uaStr);
+  const defaultSend = isIOS ? 'binary' : 'json';
+  const sendMode = (urlParams.get('send') || defaultSend).toLowerCase(); // 'json' or 'binary'
   const diag = urlParams.get('diag') === '1' || urlParams.get('debug') === 'verbose';
   const urlMode = (urlParams.get('mode') || '').toLowerCase(); // 'worklet'|'script'
   const urlRaw = urlParams.get('raw') === '1' || urlParams.get('raw') === 'true';
@@ -45,18 +48,19 @@
   function armInactivityCommit() {
     try {
       if (state.inactivityTimer) clearTimeout(state.inactivityTimer);
+      const commitDelay = isIOS ? 320 : 450; // more aggressive on iOS
       state.inactivityTimer = setTimeout(() => {
         try {
           if (state.ws && state.ws.readyState === 1) {
             // Only commit if some audio was sent recently
-            if ((Date.now() - (state.lastAudioSentAt||0)) > 350 && (metrics.sentAppends||0) > 0) {
+            if ((Date.now() - (state.lastAudioSentAt||0)) > (commitDelay - 50) && (metrics.sentAppends||0) > 0) {
               state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
               state.ws.send(JSON.stringify({ type: 'response.create' }));
               log('auto-commit (inactivity)');
             }
           }
         } catch {}
-      }, 450);
+      }, commitDelay);
     } catch {}
   }
   const renderMetrics = () => {
@@ -436,6 +440,8 @@
       const batchMs = Math.max(5, Math.min(100, parseFloat(urlParams.get('batchMs') || '20')));
       const gateParam = Math.max(0, parseFloat(urlParams.get('gate') || '0.002')); // low default gate (~-54 dB)
       const MAX_BUFFERED = 512 * 1024; // backpressure threshold
+      let flushTimer = null;
+      const flushMs = Math.max(15, parseInt(urlParams.get('flushMs') || String(batchMs + 10)));
 
       async function handleFrame(input) {
         // Downsample to 24 kHz
@@ -464,6 +470,7 @@
 
         // Flush in fixed-size chunks
         let offset = 0;
+        let sentAny = false;
         while ((combined.length - offset) >= chunkSamples) {
           const view = combined.subarray(offset, offset + chunkSamples);
           offset += chunkSamples;
@@ -530,11 +537,57 @@
               }
             } catch {}
           }
+          sentAny = true;
           // Arm quick inactivity-based commit after each send; server VAD will still drive create_response if enabled
           armInactivityCommit();
         }
         // Preserve leftover samples for next frame
         carry = (offset < combined.length) ? combined.subarray(offset).slice(0) : new Float32Array(0);
+        // Time-based flush for leftover to avoid waiting when callbacks jitter (esp. iOS)
+        try {
+          if (sentAny && flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+          if (carry.length > 0 && !flushTimer) {
+            flushTimer = setTimeout(() => {
+              try {
+                if (!carry.length) { flushTimer = null; return; }
+                const view = carry; carry = new Float32Array(0);
+                // Gate
+                const _gate = (state.gateRms != null ? state.gateRms : gateParam);
+                if (_gate > 0) {
+                  let sum = 0; for (let i=0;i<view.length;i++){ const s=view[i]; sum+=s*s; }
+                  const rms = Math.sqrt(sum / Math.max(1, view.length));
+                  if (rms < _gate) { flushTimer = null; return; }
+                }
+                // AGC + limiter
+                try {
+                  let sum = 0; for (let i=0;i<view.length;i++){ const s=view[i]; sum+=s*s; }
+                  const rms = Math.sqrt(sum / Math.max(1, view.length));
+                  if (state.agcEnabled) {
+                    const eps = 1e-6; const tgt = state.targetRms || defaultTargetRms;
+                    const desired = tgt / Math.max(rms, eps);
+                    state.agcGain = Math.max(0.1, Math.min(10, state.agcGain * (1 - agcRate) + desired * agcRate));
+                  }
+                  const gEff = (state.softwareGain || 1) * (state.agcEnabled ? state.agcGain : 1);
+                  for (let i=0;i<view.length;i++){
+                    let v=view[i]*gEff; const a=Math.abs(v);
+                    if (a>limiterThr){ const sign=v<0?-1:1; const excess=a-limiterThr; const knee=1-limiterThr; const comp=Math.tanh((excess/Math.max(1e-6,knee))*2.0)*knee; v=sign*(limiterThr+comp); }
+                    if (v>1) v=1; else if (v<-1) v=-1; view[i]=v;
+                  }
+                } catch {}
+                const pcmBuf = float32ToPCM16(view);
+                if (state.ws && state.ws.readyState === 1) {
+                  try {
+                    const ba = state.ws.bufferedAmount || 0; if (ba > MAX_BUFFERED * 4) { if (diag) log('backpressure drop', String(ba)); flushTimer = null; return; }
+                    if (sendMode === 'binary') state.ws.send(pcmBuf);
+                    else state.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: arrayBufferToBase64(pcmBuf) }));
+                    metrics.sentAppends += 1; metrics.sentBytesAudio += pcmBuf.byteLength; state.lastAudioSentAt = Date.now(); renderMetrics();
+                  } catch {}
+                }
+                armInactivityCommit();
+              } finally { flushTimer = null; }
+            }, flushMs);
+          }
+        } catch {}
       }
       try { await ctx.resume(); log('AudioContext state', ctx.state, 'mode', captureMode); } catch (e) { log('AudioContext resume error', e.message || e); }
       try {
@@ -620,6 +673,23 @@
           }, 1000);
         } catch {}
       }
+      // Mid-session ambient recalibration (lightweight): every ~45s, when quiet, adjust gate slightly
+      try {
+        if (state.recalTimer) clearInterval(state.recalTimer);
+        state.recalTimer = setInterval(() => {
+          try {
+            const buf = new Float32Array(analyser.fftSize);
+            analyser.getFloatTimeDomainData(buf);
+            let peak=0,sum=0; for (let i=0;i<buf.length;i++){ const a=Math.abs(buf[i]); if (a>peak) peak=a; sum+=a*a; }
+            const rms = Math.sqrt(sum/Math.max(1,buf.length));
+            if (peak < 0.03) { // environment appears quiet
+              const newGate = Math.max(0.001, Math.min(0.01, rms * 2));
+              state.gateRms = (state.gateRms != null) ? (state.gateRms*0.9 + newGate*0.1) : newGate;
+              if (diag) log('recal', JSON.stringify({ gateRms: Number(state.gateRms.toFixed(3)) }));
+            }
+          } catch {}
+        }, 45000);
+      } catch {}
       startVisualizer();
       // Auto record+analyse in diag mode
       if (diag) { try { await autoRecordAnalyse(stream, 5000); } catch (e) { log('autoRecord error', e.message||e); } }
@@ -636,6 +706,7 @@
       state.mediaStream && state.mediaStream.getTracks().forEach(t => t.stop());
       if (state._diagTimer) { clearInterval(state._diagTimer); state._diagTimer = null; }
       if (state.summaryTimer) { clearInterval(state.summaryTimer); state.summaryTimer = null; }
+      if (state.recalTimer) { clearInterval(state.recalTimer); state.recalTimer = null; }
     } catch {}
     // Commit the audio buffer to trigger response
     try {
