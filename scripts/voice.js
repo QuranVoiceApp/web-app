@@ -229,14 +229,27 @@
           setTimeout(() => { if (!state.micActive) startMic(); }, 150);
         }
       };
-      ws.onmessage = (ev) => {
-        if (typeof ev.data !== 'string') return; // we only expect text frames
-        const raw = ev.data;
-        try {
-          const msg = JSON.parse(raw);
-          handleServerEvent(msg, raw);
-        } catch {
-          log('<=', raw.slice(0, 160));
+      ws.onmessage = async (ev) => {
+        // Support both text JSON events and binary PCM16 frames
+        if (typeof ev.data === 'string') {
+          const raw = ev.data;
+          try {
+            const msg = JSON.parse(raw);
+            handleServerEvent(msg, raw);
+          } catch {
+            log('<=', raw.slice(0, 160));
+          }
+        } else {
+          try {
+            const arr = ev.data instanceof Blob ? await ev.data.arrayBuffer() : ev.data;
+            if (arr && arr.byteLength) {
+              const i16 = new Int16Array(arr);
+              const f32 = new Float32Array(i16.length);
+              for (let i=0;i<i16.length;i++) f32[i] = Math.max(-1, i16[i] / 32768);
+              try { metrics.recvAudioChunks += 1; metrics.recvAudioBytes += i16.byteLength; renderMetrics(); if (diag) log('delta(binary)', String(i16.byteLength)); } catch {}
+              enqueuePlayback(f32, state.serverInHz || 24000);
+            }
+          } catch (e) { log('audio.binary.error', String(e)); }
         }
       };
       ws.onerror = (e) => log('WS error', e.message || e);
@@ -330,6 +343,7 @@
         break;
       case 'response.created':
         $('transcript').textContent = '';
+        state.responseActive = true;
         break;
       // Ignore raw OpenAI transcript deltas to avoid double-printing;
       // the proxy also emits transcript_stream which we display.
@@ -374,6 +388,12 @@
       case 'response.done':
         log('<=', t);
         try { if (state.ttsGainNode) state.ttsGainNode.gain.value = 1.0; } catch {}
+        state.responseActive = false;
+        break;
+      case 'response.cancelled':
+      case 'response.canceled':
+        state.responseActive = false;
+        try { if (state.ttsGainNode) state.ttsGainNode.gain.value = 1.0; } catch {}
         break;
       case 'response.cancelled':
       case 'response.canceled':
@@ -394,11 +414,19 @@
         if (t === 'input_audio_buffer.speech_ended' && $('autoCommit')?.checked) {
           try {
             if (state.ws && state.ws.readyState === 1) {
-              state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
-              state.ws.send(JSON.stringify({ type: 'response.create' }));
+              if ((state.msSinceLastCommit||0) >= 120) {
+                state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+                state.msSinceLastCommit = 0;
+                if (!state.responseActive) {
+                  state.ws.send(JSON.stringify({ type: 'response.create' }));
+                }
+              }
             }
           } catch {}
         }
+        break;
+      case 'input_audio_buffer.committed':
+        try { state.msSinceLastCommit = 0; } catch {}
         break;
       default:
         // Keep concise, but log unknown types (more verbose in diag)
@@ -605,6 +633,8 @@
                 state.ws.send(JSON.stringify(evt));
               }
               metrics.sentAppends += 1; metrics.sentBytesAudio += pcmBuf.byteLength; state.lastAudioSentAt = Date.now(); renderMetrics();
+              // Track commit budget (ms)
+              state.msSinceLastCommit = (state.msSinceLastCommit || 0) + Math.round((view.length / (state.serverInHz||24000)) * 1000);
               if (metrics.sentAppends <= 3 || metrics.sentAppends % 50 === 0) {
                 // Quick stats from the chunk we sent
                 let peak = 0, sum = 0; for (let i = 0; i < view.length; i++){ const a = Math.abs(view[i]); peak = Math.max(peak, a); sum += a*a; }
@@ -621,9 +651,14 @@
           state.stragglerTimer = setTimeout(() => {
             try {
               if (state.ws && state.ws.readyState === 1) {
-                state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
-                state.ws.send(JSON.stringify({ type: 'response.create' }));
-                log('auto-commit (straggler flush)');
+                if ((state.msSinceLastCommit||0) >= 120) {
+                  state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+                  state.msSinceLastCommit = 0;
+                  if (!state.responseActive) {
+                    state.ws.send(JSON.stringify({ type: 'response.create' }));
+                  }
+                  log('auto-commit (straggler flush)');
+                }
               }
             } catch {}
           }, 30);
