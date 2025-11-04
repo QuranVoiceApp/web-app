@@ -5,7 +5,9 @@ const ASSETS = [
   '/theme.css',
   '/scripts/env.js',
   '/scripts/voice.js',
+  '/scripts/sw-register.js',
   '/manifest.webmanifest',
+  '/icons/favicon.svg',
 ];
 
 self.addEventListener('install', (event) => {
@@ -48,4 +50,3 @@ self.addEventListener('fetch', (event) => {
     );
   }
 });
-

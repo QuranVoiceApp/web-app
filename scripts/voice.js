@@ -7,7 +7,10 @@
     el.value += line + "\n";
     el.scrollTop = el.scrollHeight;
     console.log(...args);
+    logBuffer.push(line);
   };
+
+  const logBuffer = [];
 
   const wsUrl = (window.Env && window.Env.WS_URL) || 'wss://quran.asimo.io/realtime/v1/ws';
   $('wsUrl').textContent = wsUrl;
@@ -34,6 +37,10 @@
     playCtx: null,
     playCursor: 0,
     serverInHz: 24000,
+    meterEl: null,
+    meterFill: null,
+    meterText: null,
+    clipEl: null,
   };
 
   const setConn = (ok) => {
@@ -184,6 +191,15 @@
       case 'input_audio_buffer.speech_started':
       case 'input_audio_buffer.speech_ended':
         log('<=', t, JSON.stringify({ ts: msg.ts, threshold: msg.vad_threshold }));
+        // Optional auto-commit flow on silence
+        if (t === 'input_audio_buffer.speech_ended' && $('autoCommit')?.checked) {
+          try {
+            if (state.ws && state.ws.readyState === 1) {
+              state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+              state.ws.send(JSON.stringify({ type: 'response.create' }));
+            }
+          } catch {}
+        }
         break;
       default:
         // Keep concise, but log unknown types
@@ -217,11 +233,24 @@
       pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
     }
     let bin = '';
+    let clipped = false;
     for (let i = 0; i < pcm16.length; i++) {
       let val = pcm16[i];
+      if (Math.abs(val) >= 0x7FFF) clipped = true;
       if (val < 0) val += 0x10000;
       bin += String.fromCharCode(val & 0xff, val >> 8);
     }
+    // UI meter update based on RMS/peak of float32
+    try {
+      let peak = 0, sum = 0, n = float32.length;
+      for (let i = 0; i < n; i++) { const s = Math.abs(float32[i]); peak = Math.max(peak, s); sum += s*s; }
+      const rms = Math.sqrt(sum / Math.max(1, n));
+      const pct = Math.min(100, Math.round(peak * 100));
+      if (!state.meterFill) { state.meterFill = $('meterFill'); state.meterText = $('meterText'); state.clipEl = $('clipWarn'); }
+      if (state.meterFill) state.meterFill.style.width = pct + '%';
+      if (state.meterText) state.meterText.textContent = `level: ${pct}% (rms ${rms.toFixed(2)})`;
+      if (state.clipEl) state.clipEl.style.display = (clipped || peak > 0.98) ? '' : 'none';
+    } catch {}
     return btoa(bin);
   }
 
@@ -282,4 +311,49 @@
   });
   $('btnMic').addEventListener('click', () => state.micActive ? stopMic() : startMic());
   $('btnClear').addEventListener('click', () => { const t = $('transcript'); if (t) t.textContent=''; const l=$('log'); if (l) l.value=''; metrics.sentBytesAudio=metrics.sentAppends=metrics.recvAudioChunks=metrics.recvAudioBytes=metrics.recvTranscriptChars=0; renderMetrics(); });
+  $('btnDownload').addEventListener('click', () => {
+    try {
+      const blob = new Blob([logBuffer.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = `qvt-log-${Date.now()}.txt`; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+    } catch {}
+  });
+
+  // Persist settings
+  const saved = JSON.parse(localStorage.getItem('qvt-settings') || '{}');
+  if (saved.vad) $('vadThresh').value = saved.vad;
+  if (saved.voice) $('voice').value = saved.voice;
+  if (typeof saved.ptt === 'boolean') $('ptt').checked = saved.ptt;
+  if (typeof saved.autoCommit === 'boolean') $('autoCommit').checked = saved.autoCommit;
+  const persist = () => localStorage.setItem('qvt-settings', JSON.stringify({
+    vad: $('vadThresh').value,
+    voice: $('voice').value,
+    ptt: $('ptt').checked,
+    autoCommit: $('autoCommit').checked,
+  }));
+  $('vadThresh').addEventListener('change', persist);
+  $('voice').addEventListener('change', persist);
+  $('ptt').addEventListener('change', persist);
+  $('autoCommit').addEventListener('change', persist);
+
+  // Push‑to‑talk (hold Space)
+  document.addEventListener('keydown', (e) => {
+    if (!$('ptt').checked) return;
+    if (e.code === 'Space' && !e.repeat) {
+      const target = e.target;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+      e.preventDefault();
+      if (!state.micActive && state.connected) startMic();
+    }
+  });
+  document.addEventListener('keyup', (e) => {
+    if (!$('ptt').checked) return;
+    if (e.code === 'Space') {
+      const target = e.target;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+      e.preventDefault();
+      if (state.micActive) stopMic();
+    }
+  });
 })();

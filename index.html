@@ -7,6 +7,7 @@
     <meta name="theme-color" content="#0b0b0b" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' wss://quran.asimo.io; font-src 'self' data:; media-src 'self' blob:; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests">
     <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="./icons/favicon.svg" />
     <link rel="stylesheet" href="./theme.css" />
     <style>
       body { background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; margin: 0; }
@@ -21,6 +22,9 @@
       .ok { color: #27d07a; }
       .err { color: #ff6b6b; }
       a { color: var(--link); }
+      .meter { width: 240px; height: 8px; background:#0f0f0f; border:1px solid #1f1f1f; border-radius: 4px; overflow:hidden; }
+      .meter-fill { height: 100%; width: 0%; background: linear-gradient(90deg,#2ddc6c,#ffc107,#ff5252); transition: width .08s linear; }
+      .warn { color:#ffc107 }
     </style>
     <script defer src="./scripts/env.js"></script>
     <script defer src="./scripts/voice.js"></script>
@@ -44,9 +48,16 @@
           <button id="btnMic" disabled>Start Mic</button>
           <label>VAD Threshold <input id="vadThresh" type="number" min="0" max="1" step="0.05" value="0.7"/></label>
           <label>Voice <select id="voice"><option value="alloy">alloy</option></select></label>
+          <label><input id="ptt" type="checkbox" /> Push‑to‑talk (hold Space)</label>
+          <label><input id="autoCommit" type="checkbox" checked /> Auto‑commit on silence</label>
           <button id="btnClear" title="Clear transcript and logs">Clear</button>
+          <button id="btnDownload" title="Download debug log">Download Log</button>
         </div>
         <p class="muted">Backend WS: <code id="wsUrl"></code></p>
+        <div class="row" style="gap:8px">
+          <div class="meter"><div id="meterFill" class="meter-fill"></div></div>
+          <div id="meterText" class="muted">level: 0% <span id="clipWarn" class="pill warn" style="display:none">CLIP</span></div>
+        </div>
         <div class="row">
           <div style="flex:1;min-width:260px">
             <h4 style="margin:8px 0">Transcript</h4>
