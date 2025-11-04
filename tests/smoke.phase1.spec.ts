@@ -1,6 +1,8 @@
 import { test, expect } from '@playwright/test';
 
-const TARGET_URL = process.env.PHASE1_URL || 'https://app.asimo.io/?ff=seq_json,sim_input&diag=1';
+const sha = process.env.PHASE1_SHA || process.env.GITHUB_SHA || 'dev';
+const shortSha = sha.slice(0, 8);
+const TARGET_URL = process.env.PHASE1_URL || `https://app.asimo.io/?ff=seq_json,sim_input&diag=1&v=${shortSha}`;
 
 test('Phase 1 transport sanity', async ({ page }) => {
   const consoleErrors: string[] = [];
