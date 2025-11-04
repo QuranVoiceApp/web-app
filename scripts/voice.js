@@ -24,7 +24,7 @@
   const softwareGain = isFinite(urlGain) && urlGain > 0 ? urlGain : 1;
   const agcParam = (urlParams.get('agc') || '1').toLowerCase();
   const agcEnabledDefault = !(agcParam === '0' || agcParam === 'false' || agcParam === 'off');
-  const targetRms = Math.max(0.01, parseFloat(urlParams.get('targetRms') || '0.12'));
+  const defaultTargetRms = Math.max(0.01, parseFloat(urlParams.get('targetRms') || '0.12'));
   const agcRate = Math.max(0.001, parseFloat(urlParams.get('agcRate') || '0.02')); // adaptation per chunk
   const limiterThr = Math.min(0.999, Math.max(0.5, parseFloat(urlParams.get('lim') || '0.9')));
   log('sendMode', sendMode);
@@ -72,6 +72,8 @@
     softwareGain,
     agcEnabled: agcEnabledDefault,
     agcGain: 1,
+    targetRms: defaultTargetRms,
+    gateRms: null, // dynamically set after ambient calibration
   };
 
   const setConn = (ok) => {
@@ -110,10 +112,10 @@
         setConn(true);
         log('WebSocket open');
         try { state.playCtx?.resume(); } catch {}
-        // Send client version/state for diagnostics (not forwarded to OpenAI)
+        // Send client version/state for diagnostics and hints (server drops client.* before OpenAI)
         try {
           const ver = (document.currentScript && document.currentScript.src) || 'qvt-web';
-          ws.send(JSON.stringify({ type: 'client.state', client: { app_version: 'web-' + new Date().toISOString(), platform: navigator.userAgent } }));
+          ws.send(JSON.stringify({ type: 'client.state', client: { app_version: 'web-' + new Date().toISOString(), platform: navigator.userAgent, read_mode: false } }));
         } catch {}
         // Initialize playback context
         if (!state.playCtx) {
@@ -408,7 +410,7 @@
       // Ring buffer for ~20 ms framing at server sample rate (default 24 kHz)
       let carry = new Float32Array(0);
       const batchMs = Math.max(5, Math.min(100, parseFloat(urlParams.get('batchMs') || '20')));
-      const gateRms = Math.max(0, parseFloat(urlParams.get('gate') || '0.002')); // low default gate (~-54 dB)
+      const gateParam = Math.max(0, parseFloat(urlParams.get('gate') || '0.002')); // low default gate (~-54 dB)
       const MAX_BUFFERED = 512 * 1024; // backpressure threshold
 
       async function handleFrame(input) {
@@ -443,6 +445,7 @@
           offset += chunkSamples;
 
           // Optional noise gate
+          const gateRms = (state.gateRms != null ? state.gateRms : gateParam);
           if (gateRms > 0) {
             let sum = 0; for (let i=0;i<view.length;i++) { const s=view[i]; sum += s*s; }
             const rms = Math.sqrt(sum / Math.max(1, view.length));
@@ -455,7 +458,8 @@
             const rms = Math.sqrt(sum / Math.max(1, view.length));
             if (state.agcEnabled) {
               const eps = 1e-6;
-              const desired = targetRms / Math.max(rms, eps);
+              const tgt = state.targetRms || defaultTargetRms;
+              const desired = tgt / Math.max(rms, eps);
               // Smooth adaptation to avoid pumping
               state.agcGain = Math.max(0.1, Math.min(10, state.agcGain * (1 - agcRate) + desired * agcRate));
             }
@@ -523,6 +527,26 @@
       state.mediaStream = stream; state.audioContext = ctx; /* state.processor set above */ state.analyser = analyser; state.micActive = true;
       $('btnMic').textContent = 'Stop Mic';
       log('Mic started');
+      // Ambient calibration (no UI): ~1.5s quick pass to set targetRms and gateRms based on environment
+      try {
+        const calMs = Math.max(800, Math.min(4000, parseInt(urlParams.get('calMs')||'1500')));
+        const t0 = performance.now();
+        let sum=0, n=0, peak=0;
+        const tmp = new Float32Array(analyser.fftSize);
+        while ((performance.now()-t0) < calMs) {
+          analyser.getFloatTimeDomainData(tmp);
+          let s=0, p=0; for (let i=0;i<tmp.length;i++){ const a=Math.abs(tmp[i]); s+=a*a; if (a>p) p=a; }
+          const rms = Math.sqrt(s/Math.max(1,tmp.length));
+          sum += rms; n += 1; if (p>peak) peak=p;
+          await new Promise(r=>setTimeout(r, 30));
+        }
+        const amb = n ? (sum/n) : 0.003;
+        const tgt = Math.max(0.06, Math.min(0.18, amb * 4));
+        // Gate slightly above ambient (but not too high)
+        const gate = Math.max(0.001, Math.min(0.01, amb * 2));
+        state.targetRms = tgt; state.gateRms = gate; state.agcGain = 1;
+        log('calibrated', JSON.stringify({ ambientRms: Number(amb.toFixed(4)), targetRms: Number(tgt.toFixed(3)), gateRms: Number(gate.toFixed(3)) }));
+      } catch {}
       // Periodic diagnostics summary (diag mode)
       if (diag) {
         try {
