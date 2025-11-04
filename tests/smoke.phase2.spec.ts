@@ -51,7 +51,7 @@ test('Phase 2 simulated transport smoke', async ({ page }) => {
     const jitter = metrics.jitterDepthMs ?? metrics.jitterMs;
     if (typeof jitter === 'number' && (jitter < bounds.min || jitter > bounds.max)) return false;
     return true;
-  }, { minCommit: negotiation.minCommitMs, maxCommit: negotiation.maxCommitMs, bounds: jitterBounds }, { timeout: 30_000 });
+  }, { minCommit, maxCommit, bounds: jitterBounds }, { timeout: 30_000 });
 
   const metrics = await page.evaluate(() => (window as any).__qvtMetrics);
   expect(metrics).toBeTruthy();
