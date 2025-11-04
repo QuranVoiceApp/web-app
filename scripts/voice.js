@@ -40,6 +40,7 @@
   const urlDeviceLabel = urlParams.get('deviceLabel') || urlParams.get('device') || '';
   const urlGain = parseFloat(urlParams.get('gain') || '1');
   const softwareGain = isFinite(urlGain) && urlGain > 0 ? urlGain : 1;
+  const dsp = (typeof DSP !== 'undefined') ? DSP : null;
   const agcParam = (urlParams.get('agc') || '1').toLowerCase();
   const agcEnabledDefault = !(agcParam === '0' || agcParam === 'false' || agcParam === 'off');
   const defaultTargetRms = Math.max(0.01, parseFloat(urlParams.get('targetRms') || '0.12'));
@@ -138,6 +139,7 @@
     _seq: 0,
     simSource: null,
     _captureHandleFrame: null,
+    firFilter: null,
   };
 
   const ewma = (prev, value, alpha = 0.2) => (prev == null ? value : (alpha * value) + ((1 - alpha) * prev));
@@ -626,9 +628,13 @@
     const flushMs = Math.max(15, parseInt(urlParams.get('flushMs') || String(batchMs + 10)));
     let carry = new Float32Array(0);
     let flushTimer = null;
+    const wantFir = !!(FF.fir_halfband && dsp && typeof dsp.FirFilter === 'function');
+    let firFilter = (wantFir && captureMode === 'script') ? new dsp.FirFilter(dsp.HALF_BAND_COEFFS) : null;
+
 
     const handleFrame = (input) => {
-      const ds = downsample48kTo24k(input);
+      const filtered = firFilter ? firFilter.process(input) : input;
+      const ds = downsample48kTo24k(filtered);
       try {
         let nz = 0;
         for (let i = 0; i < ds.length; i++) if (Math.abs(ds[i]) > 1e-4) nz++;
@@ -804,6 +810,7 @@
       } catch {}
     };
 
+    state.firFilter = firFilter || null;
     state._captureHandleFrame = handleFrame;
     let activeMode = captureMode;
 
@@ -812,6 +819,7 @@
       try {
         await ctx.audioWorklet.addModule('./scripts/pcm_worklet.js');
         const node = new AudioWorkletNode(ctx, 'pcm-capture');
+        try { node.port.postMessage({ type: 'configure_fir', enabled: wantFir, coeffs: wantFir ? Array.from(dsp.HALF_BAND_COEFFS) : null }); } catch {}
         source.connect(node);
         const sink = ctx.createGain();
         sink.gain.value = monitor ? 1 : 0;
@@ -834,6 +842,8 @@
               log('fallback', 'no worklet frames; switching to script');
               try { processor && processor.disconnect(); } catch {}
               const sp = ctx.createScriptProcessor(4096, 1, 1);
+              if (wantFir) { try { firFilter = new dsp.FirFilter(dsp.HALF_BAND_COEFFS); } catch { firFilter = null; } } else { firFilter = null; }
+              state.firFilter = firFilter;
               source.connect(sp);
               const sink2 = ctx.createGain(); sink2.gain.value = monitor ? 1 : 0; sp.connect(sink2); sink2.connect(ctx.destination);
               sp.onaudioprocess = (e) => {
@@ -1074,6 +1084,10 @@
         try { state.simSource.disconnect?.(); } catch {}
         state.simSource = null;
       }
+      if (state.firFilter && typeof state.firFilter.reset === 'function') {
+        try { state.firFilter.reset(); } catch {}
+      }
+      state.firFilter = null;
       state._captureHandleFrame = null;
       if (state._diagTimer) { clearInterval(state._diagTimer); state._diagTimer = null; }
       if (state.summaryTimer) { clearInterval(state.summaryTimer); state.summaryTimer = null; }
