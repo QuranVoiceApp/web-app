@@ -20,8 +20,11 @@
   const urlMode = (urlParams.get('mode') || '').toLowerCase(); // 'worklet'|'script'
   const urlRaw = urlParams.get('raw') === '1' || urlParams.get('raw') === 'true';
   const urlDeviceLabel = urlParams.get('deviceLabel') || urlParams.get('device') || '';
+  const urlGain = parseFloat(urlParams.get('gain') || '1');
+  const softwareGain = isFinite(urlGain) && urlGain > 0 ? urlGain : 1;
   log('sendMode', sendMode);
   if (diag) log('diag', 'on');
+  if (diag && softwareGain !== 1) log('gain', String(softwareGain));
 
   const metrics = {
     sentBytesAudio: 0,
@@ -61,6 +64,7 @@
     analyser: null,
     visRaf: null,
     autoStartMic: true,
+    softwareGain,
   };
 
   const setConn = (ok) => {
@@ -396,6 +400,15 @@
       async function handleFrame(input) {
         // Downsample to 24 kHz
         const ds = downsample48kTo24k(input);
+        // Software gain (if set via ?gain=)
+        if (state.softwareGain && state.softwareGain !== 1) {
+          const g = state.softwareGain;
+          for (let i = 0; i < ds.length; i++) {
+            let v = ds[i] * g;
+            if (v > 1) v = 1; else if (v < -1) v = -1;
+            ds[i] = v;
+          }
+        }
         const pcmBuf = float32ToPCM16(ds);
         // Track non-zero samples
         try {
@@ -457,6 +470,7 @@
                 ctx: ctx.state,
                 micActive: state.micActive,
                 deviceId: (state.deviceId||'default'),
+                gain: state.softwareGain || 1,
                 nzPct,
                 lastPeak: Number((state.lastPeakRms?.peak||0).toFixed(3)),
                 lastRms: Number((state.lastPeakRms?.rms||0).toFixed(3)),
