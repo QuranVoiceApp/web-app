@@ -298,6 +298,24 @@
 
   function handleServerEvent(msg, raw) {
     const t = msg.type || '';
+    // Handle new output audio delta family (when modalities include audio+text)
+    if (t === 'response.output_audio.delta') {
+      try {
+        const b64 = msg.delta || msg.audio || msg.bytes || msg.data || '';
+        if (typeof b64 === 'string' && b64.length) {
+          const bin = atob(b64);
+          const i16 = new Int16Array(bin.length / 2);
+          for (let i = 0; i < i16.length; i++) {
+            const lo = bin.charCodeAt(i*2), hi = bin.charCodeAt(i*2+1);
+            let v = (hi << 8) | lo; if (v & 0x8000) v -= 0x10000; i16[i] = v;
+          }
+          const f32 = new Float32Array(i16.length);
+          for (let i=0;i<i16.length;i++) f32[i] = Math.max(-1, i16[i] / 32768);
+          enqueuePlayback(f32, msg.sample_rate_hz || 24000);
+        }
+      } catch (e) { log('audio.decode.error', String(e)); }
+      return;
+    }
     switch (t) {
       case 'session.audio_status@v1':
         if (msg.input_sample_rate_hz) state.serverInHz = msg.input_sample_rate_hz;
@@ -351,8 +369,10 @@
         break;
       }
       case 'response.audio.done':
+      case 'response.output_audio.done':
       case 'response.done':
         log('<=', t);
+        try { if (state.ttsGainNode) state.ttsGainNode.gain.value = 1.0; } catch {}
         break;
       case 'session.no_audio_ingress@v1':
         log('<= no_audio_ingress', JSON.stringify(msg));
@@ -664,20 +684,22 @@
       state.mediaStream = stream; state.audioContext = ctx; /* state.processor set above */ state.analyser = analyser; state.micActive = true;
       $('btnMic').textContent = 'Stop Mic';
       log('Mic started');
-      // Ambient calibration (no UI): ~1.5s quick pass to set targetRms and gateRms based on environment
+      // Ambient calibration (no UI): ~1.5s quick pass to set targetRms and gateRms based on environment (with warm-up)
       try {
         const calMs = Math.max(800, Math.min(4000, parseInt(urlParams.get('calMs')||'1500')));
+        await new Promise(r=>setTimeout(r,120)); // warm-up for analyser to settle
         const t0 = performance.now();
-        let sum=0, n=0, peak=0;
+        let sum=0, n=0, peak=0, nonZero=0;
         const tmp = new Float32Array(analyser.fftSize);
         while ((performance.now()-t0) < calMs) {
           analyser.getFloatTimeDomainData(tmp);
           let s=0, p=0; for (let i=0;i<tmp.length;i++){ const a=Math.abs(tmp[i]); s+=a*a; if (a>p) p=a; }
           const rms = Math.sqrt(s/Math.max(1,tmp.length));
+          if (rms > 1e-5) nonZero++;
           sum += rms; n += 1; if (p>peak) peak=p;
           await new Promise(r=>setTimeout(r, 30));
         }
-        const amb = n ? (sum/n) : 0.003;
+        const amb = (n && nonZero) ? (sum/n) : 0.003;
         const tgt = Math.max(0.06, Math.min(0.18, amb * 4));
         // Gate slightly above ambient (but not too high)
         const gate = Math.max(0.001, Math.min(0.01, amb * 2));
@@ -790,11 +812,20 @@
 
   function buildConstraints() {
     const raw = $('rawMic').checked;
-    const sysProc = (urlParams.get('sysProc') || '').toLowerCase();
-    const wantSys = sysProc && (sysProc === '1' || sysProc === 'on' || sysProc === 'true');
-    const useSys = wantSys && !raw; // raw overrides URL
-    const c = { audio: { echoCancellation: true, noiseSuppression: useSys, autoGainControl: useSys, channelCount: 1 }, video: false };
+    const sysProc = String(urlParams.get('sysProc') || '').toLowerCase();
+    const wantSys = /^(1|on|true)$/i.test(sysProc);
+    const useSys = !!(wantSys && !raw);
+    const c = {
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: Boolean(useSys),
+        autoGainControl: Boolean(useSys),
+        channelCount: 1
+      },
+      video: false
+    };
     if (state.deviceId) c.audio.deviceId = { exact: state.deviceId };
+    try { log('getUserMedia constraints', JSON.stringify(c)); } catch {}
     return c;
   }
 
