@@ -408,6 +408,60 @@
     } catch {}
   });
 
+  // Auto-detect mic: try available devices briefly and choose the one with highest peak
+  $('btnAutoDetect').addEventListener('click', async () => {
+    try {
+      log('auto-detect', 'starting scan of input devices');
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const inputs = devices.filter(d => d.kind === 'audioinput');
+      if (!inputs.length) { log('auto-detect', 'no inputs'); return; }
+      const results = [];
+      for (const d of inputs) {
+        const r = await sampleDeviceOnce(d.deviceId);
+        results.push({ id: d.deviceId, label: d.label || '(no label)', peak: r.peak, rms: r.rms });
+        log('auto-detect', `${d.label || d.deviceId.slice(0,8)} peak=${r.peak.toFixed(3)} rms=${r.rms.toFixed(3)}`);
+      }
+      results.sort((a,b) => b.peak - a.peak);
+      const best = results[0];
+      if (!best || best.peak <= 0.01) { log('auto-detect', 'no device with measurable signal'); return; }
+      state.deviceId = best.id; persist();
+      log('auto-detect', `selected '${best.label}' (peak=${best.peak.toFixed(3)})`);
+      if (state.micActive) { stopMic(); }
+      startMic();
+    } catch (e) { log('auto-detect error', e.message || e); }
+  });
+
+  async function sampleDeviceOnce(deviceId) {
+    const raw = true;
+    const constraints = { audio: { deviceId: { exact: deviceId }, echoCancellation: !raw, noiseSuppression: !raw, autoGainControl: !raw, channelCount: 1 }, video: false };
+    let stream, ctx, proc, src;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
+      ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+      src = ctx.createMediaStreamSource(stream);
+      proc = ctx.createScriptProcessor(2048, 1, 1);
+      src.connect(proc); proc.connect(ctx.destination);
+      let peak = 0, sum = 0, frames = 0;
+      await new Promise((resolve) => {
+        const t = setTimeout(resolve, 400);
+        proc.onaudioprocess = (e) => {
+          const input = e.inputBuffer.getChannelData(0);
+          for (let i=0;i<input.length;i++){ const a=Math.abs(input[i]); peak = Math.max(peak,a); sum += a*a; }
+          frames += input.length;
+        };
+      });
+      const rms = Math.sqrt(sum / Math.max(1, frames));
+      return { peak, rms };
+    } catch (e) {
+      return { peak: 0, rms: 0 };
+    } finally {
+      try { proc && proc.disconnect(); } catch {}
+      try { src && src.disconnect(); } catch {}
+      try { ctx && ctx.close(); } catch {}
+      try { stream && stream.getTracks().forEach(t => t.stop()); } catch {}
+    }
+  }
+
   // Persist settings
   const saved = JSON.parse(localStorage.getItem('qvt-settings') || '{}');
   if (saved.vad) $('vadThresh').value = saved.vad;
