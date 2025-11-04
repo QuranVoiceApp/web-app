@@ -15,6 +15,24 @@ Joplin Web is Joplin Mobile, running in a web browser.
 
 Like Joplin Mobile, Joplin Web is local-first. Notes and attachments are stored locally on your computer, but can optionally be synced with one of the supported sync targets. As a result, Joplin Web can be used offline.
 
+### Theme palette
+
+Include `theme.css` to use the shared brand palette and CSS variables.
+
+Example (static HTML):
+
+```
+<link rel="stylesheet" href="./theme.css" />
+```
+
+Available variables:
+
+- `--brand-accent`: #28FE14
+- `--brand-ink-strong`: #000000
+- `--bg` / `--fg` / `--link` / `--button-*` (optional roles)
+
+Helper classes: `.brand-accent`, `.brand-ink-strong`, `.btn-brand`.
+
 ### What browsers does it support?
 
 The Joplin web app works best in recent versions of Chrome and Safari. It can also be used in Firefox, however, it may take a very long time to start.
@@ -42,5 +60,4 @@ Some features are available only on certain platforms:
 
 [^1]: Requires [support for showDirectoryPicker](https://caniuse.com/?search=showDirectoryPicker).
 [^2]: Requires [Web Share API support](https://caniuse.com/?search=web%20share%20api).
-
 
