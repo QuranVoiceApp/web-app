@@ -1,4 +1,4 @@
-const CACHE_NAME = 'qvt-static-v1';
+const CACHE_NAME = 'qvt-static-v3';
 const ASSETS = [
   '/',
   '/index.html',

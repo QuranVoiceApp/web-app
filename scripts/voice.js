@@ -69,6 +69,11 @@
         state.connected = true;
         setConn(true);
         log('WebSocket open');
+        // Send client version/state for diagnostics (not forwarded to OpenAI)
+        try {
+          const ver = (document.currentScript && document.currentScript.src) || 'qvt-web';
+          ws.send(JSON.stringify({ type: 'client.state', client: { app_version: 'web-' + new Date().toISOString(), platform: navigator.userAgent } }));
+        } catch {}
         // Initialize playback context
         if (!state.playCtx) {
           state.playCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -390,7 +395,7 @@
         input_sample_rate_hz: 24000,
       }
     };
-    try { state.ws.send(JSON.stringify(payload)); log('=> session.update', JSON.stringify({ voice: payload.voice, threshold })); } catch {}
+    try { state.ws.send(JSON.stringify(payload)); log('=> session.update', JSON.stringify({ voice: payload.session.voice, threshold })); } catch {}
   };
   let updateTimer = null;
   const sendSessionUpdateThrottled = () => {
