@@ -101,8 +101,6 @@
             voice: $('voice').value,
             // Best-effort hints; server may accept either
             turn_detection: { type: 'server_vad', threshold },
-            input_audio_format: 'pcm16',
-            input_sample_rate_hz: 24000,
           }
         };
         try { ws.send(JSON.stringify(sessionUpdate)); } catch {}
@@ -407,8 +405,6 @@
       session: {
         voice: $('voice').value,
         turn_detection: { type: 'server_vad', threshold },
-        input_audio_format: 'pcm16',
-        input_sample_rate_hz: 24000,
       }
     };
     try { state.ws.send(JSON.stringify(payload)); log('=> session.update', JSON.stringify({ voice: payload.session.voice, threshold })); } catch {}
