@@ -397,6 +397,12 @@
         };
         processor = sp; log('capture', 'script processor attached');
       }
+      // Ring buffer for ~20 ms framing at server sample rate (default 24 kHz)
+      let carry = new Float32Array(0);
+      const batchMs = Math.max(5, Math.min(100, parseFloat(urlParams.get('batchMs') || '20')));
+      const gateRms = Math.max(0, parseFloat(urlParams.get('gate') || '0')); // 0 disables gate
+      const MAX_BUFFERED = 512 * 1024; // backpressure threshold
+
       async function handleFrame(input) {
         // Downsample to 24 kHz
         const ds = downsample48kTo24k(input);
@@ -409,8 +415,18 @@
             ds[i] = v;
           }
         }
-        const pcmBuf = float32ToPCM16(ds);
-        // Track non-zero samples
+        // Accumulate into carry
+        let combined;
+        if (!carry.length) {
+          combined = ds;
+        } else {
+          combined = new Float32Array(carry.length + ds.length);
+          combined.set(carry, 0);
+          combined.set(ds, carry.length);
+        }
+        const chunkSamples = Math.max(1, Math.round((state.serverInHz || 24000) * (batchMs / 1000)));
+
+        // Track non-zero samples for diagnostics
         try {
           let nz = 0; for (let i=0;i<ds.length;i++) if (Math.abs(ds[i]) > 1e-4) nz++;
           metrics.nzSamples += nz; metrics.totalSamples += ds.length; if ((metrics.sentAppends % 20) === 0) renderMetrics();
@@ -419,23 +435,46 @@
             log('frame sample', JSON.stringify(sample));
           }
         } catch {}
-        if (state.ws && state.ws.readyState === 1) {
-          try {
-            if (sendMode === 'binary') {
-              state.ws.send(pcmBuf);
-            } else {
-              const b64 = arrayBufferToBase64(pcmBuf);
-              const evt = { type: 'input_audio_buffer.append', audio: b64 };
-              state.ws.send(JSON.stringify(evt));
-            }
-            metrics.sentAppends += 1; metrics.sentBytesAudio += pcmBuf.byteLength; renderMetrics();
-            if (metrics.sentAppends <= 3 || metrics.sentAppends % 50 === 0) {
-              const n = ds.length; let peak = 0, sum = 0; for (let i = 0; i < n; i++){ const a = Math.abs(ds[i]); peak = Math.max(peak, a); sum += a*a; }
-              const rms = Math.sqrt(sum / Math.max(1,n));
-              log('=> audio', `mode=${sendMode} bytes=${pcmBuf.byteLength} peak=${peak.toFixed(2)} rms=${rms.toFixed(2)} buffered=${state.ws.bufferedAmount}`);
-            }
-          } catch {}
+
+        // Flush in fixed-size chunks
+        let offset = 0;
+        while ((combined.length - offset) >= chunkSamples) {
+          const view = combined.subarray(offset, offset + chunkSamples);
+          offset += chunkSamples;
+
+          // Optional noise gate
+          if (gateRms > 0) {
+            let sum = 0; for (let i=0;i<view.length;i++) { const s=view[i]; sum += s*s; }
+            const rms = Math.sqrt(sum / Math.max(1, view.length));
+            if (rms < gateRms) continue; // drop very quiet chunk
+          }
+
+          const pcmBuf = float32ToPCM16(view);
+
+          if (state.ws && state.ws.readyState === 1) {
+            try {
+              // Backpressure handling: if buffered is too large, skip sending
+              const ba = state.ws.bufferedAmount || 0;
+              if (ba > MAX_BUFFERED * 4) { if (diag) log('backpressure drop', String(ba)); continue; }
+              if (sendMode === 'binary') {
+                state.ws.send(pcmBuf);
+              } else {
+                const b64 = arrayBufferToBase64(pcmBuf);
+                const evt = { type: 'input_audio_buffer.append', audio: b64 };
+                state.ws.send(JSON.stringify(evt));
+              }
+              metrics.sentAppends += 1; metrics.sentBytesAudio += pcmBuf.byteLength; renderMetrics();
+              if (metrics.sentAppends <= 3 || metrics.sentAppends % 50 === 0) {
+                // Quick stats from the chunk we sent
+                let peak = 0, sum = 0; for (let i = 0; i < view.length; i++){ const a = Math.abs(view[i]); peak = Math.max(peak, a); sum += a*a; }
+                const rms = Math.sqrt(sum / Math.max(1, view.length));
+                log('=> audio', `mode=${sendMode} bytes=${pcmBuf.byteLength} peak=${peak.toFixed(2)} rms=${rms.toFixed(2)} buffered=${state.ws.bufferedAmount}`);
+              }
+            } catch {}
+          }
         }
+        // Preserve leftover samples for next frame
+        carry = (offset < combined.length) ? combined.subarray(offset).slice(0) : new Float32Array(0);
       }
       try { await ctx.resume(); log('AudioContext state', ctx.state, 'mode', captureMode); } catch (e) { log('AudioContext resume error', e.message || e); }
       try {
