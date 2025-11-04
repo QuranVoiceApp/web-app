@@ -33,3 +33,37 @@ Focus: validate the new FIR half-band decimator, drift slewing, and worklet watc
 - Screenshot or copy of diagnostics console (`SUMMARY` logs + JSON payloads).
 - `window.__qvtDiag` snapshot showing `{ commitWinMs, rttMs, driftPpm, workletStalls, watchdogRecovers }` steady state.
 - Audio clip (30 s) recorded via built-in recorder for aliasing comparison when FIR is toggled.
+
+---
+
+# Phase 3 QA Matrix — True Barge-in (Suspend / Resume)
+
+Goal: verify suspend/resume delivers <50 ms ducking, no audible pops on resume, and metrics counters align with expectations. Keep `diag=1` enabled and capture Prometheus samples after each pass.
+
+## Desktop Chrome
+- `?ff=seq_json,barge_in,sim_input&diag=1`
+  - Use simulated mic to reproduce the Playwright smoke. Confirm `__qvtMetrics.duckLatencyMs ≤ 50`.
+  - Inspect `__qvtMetrics.cancelEvents` increments after manual commit.
+  - Ensure `window.__qvtMetrics.bargeInEvents` increments exactly once per barge.
+
+- Real mic session (`?ff=seq_json,barge_in&diag=1`)
+  - Speak over TTS playback; expect ducking within 50 ms and immediate `response.suspend_audio`.
+  - Resume after 300 ms silence ⇒ playback resumes without click; `resumeEvents` increments.
+
+## iPhone Safari
+- Same flags as above.
+  - Confirm ducking/resume behaviour matches desktop.
+  - Monitor `duckLatencyMs` in console; target ≤60 ms on device.
+  - Ensure `tailPadNeeded` clears on commit (no truncated words at resume).
+
+## Backend Metrics Validation
+- After exercising suspend/resume, fetch `/metrics` and check:
+  - `tts_suspend_requested_total` increments with each suspension.
+  - `tts_suspension_ms_total` roughly matches stopwatch (±10%).
+  - `tts_resume_buffered_events_total` equals buffered delta count (should be small, typically 2–4).
+  - `tts_buffer_drop_total` remains 0; if >0, mark test as warning and investigate buffer limit.
+
+## Artifacts
+- Playwright trace (`phase3-bargein` job) + console log with `{bargeInEvents, duckLatencyMs, resumeEvents}` snapshot.
+- Prometheus scrape excerpt highlighting new counters.
+- Optional: 10 s audio capture showing smooth resume (no fade-in click).
