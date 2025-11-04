@@ -331,11 +331,32 @@
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
       const source = ctx.createMediaStreamSource(stream);
-      const analyser = ctx.createAnalyser(); analyser.fftSize = 1024; analyser.smoothingTimeConstant = 0.85;
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
-      source.connect(analyser); source.connect(processor); processor.connect(ctx.destination);
-      try { await ctx.resume(); log('AudioContext state', ctx.state); } catch (e) { log('AudioContext resume error', e.message || e); }
-      processor.onaudioprocess = (e) => {
+      const analyser = ctx.createAnalyser(); analyser.fftSize = 2048; analyser.smoothingTimeConstant = 0.85;
+      // Choose capture mode
+      let captureMode = (document.getElementById('captureMode')||{value:'worklet'}).value || 'worklet';
+      if (!('audioWorklet' in ctx) && captureMode === 'worklet') captureMode = 'script';
+      let processor = null;
+      if (captureMode === 'worklet') {
+        try {
+          await ctx.audioWorklet.addModule('./scripts/pcm_worklet.js');
+          const node = new AudioWorkletNode(ctx, 'pcm-capture');
+          source.connect(analyser); source.connect(node); node.connect(ctx.destination);
+          node.port.onmessage = (ev) => {
+            const input = ev.data && ev.data.data; if (!input) return; handleFrame(input);
+          };
+          processor = node;
+          log('capture', 'worklet attached');
+        } catch (e) {
+          log('worklet error', e.message || e); captureMode = 'script';
+        }
+      }
+      if (captureMode === 'script') {
+        const sp = ctx.createScriptProcessor(4096, 1, 1);
+        source.connect(analyser); source.connect(sp); sp.connect(ctx.destination);
+        sp.onaudioprocess = (e) => { const input = e.inputBuffer.getChannelData(0); handleFrame(input); };
+        processor = sp; log('capture', 'script processor attached');
+      }
+      async function handleFrame(input) {
         const input = e.inputBuffer.getChannelData(0);
         // Downsample to 24 kHz
         const ds = downsample48kTo24k(input);
@@ -362,7 +383,8 @@
             }
           } catch {}
         }
-      };
+      }
+      try { await ctx.resume(); log('AudioContext state', ctx.state, 'mode', captureMode); } catch (e) { log('AudioContext resume error', e.message || e); }
       try {
         const tr = stream.getAudioTracks()[0];
         if (tr) {
