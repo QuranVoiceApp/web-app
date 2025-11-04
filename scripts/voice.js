@@ -320,7 +320,8 @@
     try {
       // Clear any residual buffered audio on server
       try { if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify({ type: 'input_audio_buffer.clear' })); } catch {}
-      const constraints = { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false };
+      const raw = $('rawMic').checked;
+      const constraints = { audio: { echoCancellation: !raw, noiseSuppression: !raw, autoGainControl: !raw, channelCount: 1 }, video: false };
       if (state.deviceId) constraints.audio.deviceId = { exact: state.deviceId };
       try { log('getUserMedia constraints', JSON.stringify(constraints)); } catch {}
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -352,6 +353,15 @@
           } catch {}
         }
       };
+      try {
+        const tr = stream.getAudioTracks()[0];
+        if (tr) {
+          tr.enabled = true;
+          tr.onmute = () => log('track mute event');
+          tr.onunmute = () => log('track unmute event');
+          try { log('track settings', JSON.stringify(tr.getSettings())); } catch {}
+        }
+      } catch {}
       state.mediaStream = stream; state.audioContext = ctx; state.processor = processor; state.analyser = analyser; state.micActive = true;
       $('btnMic').textContent = 'Stop Mic';
       log('Mic started');
@@ -404,6 +414,7 @@
   if (saved.voice) $('voice').value = saved.voice;
   if (typeof saved.ptt === 'boolean') $('ptt').checked = saved.ptt;
   if (typeof saved.autoCommit === 'boolean') $('autoCommit').checked = saved.autoCommit;
+  if (typeof saved.rawMic === 'boolean') $('rawMic').checked = saved.rawMic;
   if (saved.deviceId) state.deviceId = saved.deviceId;
   if (saved.speakerId) state.speakerId = saved.speakerId;
   const persist = () => localStorage.setItem('qvt-settings', JSON.stringify({
@@ -418,6 +429,8 @@
   $('voice').addEventListener('change', persist);
   $('ptt').addEventListener('change', persist);
   $('autoCommit').addEventListener('change', persist);
+  $('rawMic').addEventListener('change', () => { persist(); if (state.micActive) { stopMic(); startMic(); }});
+  $('btnUseDefault').addEventListener('click', () => { state.deviceId = null; persist(); if (state.micActive) { stopMic(); } startMic(); });
 
   // Real-time session.update when voice or VAD threshold changes
   const sendSessionUpdate = () => {
