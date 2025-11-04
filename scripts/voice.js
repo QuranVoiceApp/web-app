@@ -181,6 +181,10 @@
       case 'session.no_audio_ingress@v1':
         log('<= no_audio_ingress', JSON.stringify(msg));
         break;
+      case 'input_audio_buffer.speech_started':
+      case 'input_audio_buffer.speech_ended':
+        log('<=', t, JSON.stringify({ ts: msg.ts, threshold: msg.vad_threshold }));
+        break;
       default:
         // Keep concise, but log unknown types
         if (t) log('<=', t);
