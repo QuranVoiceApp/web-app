@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Quran Voice Tutor — Voice Mode</title>
+    <link rel="stylesheet" href="./theme.css" />
+    <style>
+      body { background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; margin: 0; }
+      header { padding: 24px 16px; border-bottom: 1px solid #202020; }
+      main { padding: 16px; max-width: 960px; margin: 0 auto; }
+      .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+      .card { background: #141414; border: 1px solid #1f1f1f; border-radius: 10px; padding: 16px; }
+      .muted { color: #aaa; }
+      textarea { width: 100%; min-height: 120px; background: #0f0f0f; color: var(--fg); border: 1px solid #1f1f1f; border-radius: 8px; padding: 12px; }
+      input, select { background: #0f0f0f; color: var(--fg); border: 1px solid #1f1f1f; border-radius: 6px; padding: 8px 10px; }
+      .pill { padding: 4px 8px; border-radius: 999px; border: 1px solid #2a2a2a; font-size: 12px; }
+      .ok { color: #27d07a; }
+      .err { color: #ff6b6b; }
+      a { color: var(--link); }
+    </style>
+    <script defer src="./scripts/voice.js"></script>
+    <script defer src="./scripts/env.js"></script>
+  </head>
+  <body>
+    <header>
+      <div class="row" style="justify-content: space-between">
+        <div>
+          <h1 class="brand-accent" style="margin: 0">Quran Voice Tutor</h1>
+          <div class="muted">World‑class voice mode • Low‑latency • Verbatim KB reading</div>
+        </div>
+        <div id="conn-pill" class="pill">Disconnected</div>
+      </div>
+    </header>
+    <main>
+      <section class="card">
+        <h2 style="margin-top:0">Voice Test</h2>
+        <div class="row">
+          <button id="btnConnect" class="btn-brand">Connect</button>
+          <button id="btnMic" disabled>Start Mic</button>
+          <label>VAD Threshold <input id="vadThresh" type="number" min="0" max="1" step="0.05" value="0.7"/></label>
+          <label>Voice <select id="voice"><option value="alloy">alloy</option></select></label>
+        </div>
+        <p class="muted">Backend WS: <code id="wsUrl"></code></p>
+        <textarea id="log" readonly placeholder="Logs...\n"></textarea>
+      </section>
+
+      <section style="margin-top:16px" class="card">
+        <h3 style="margin-top:0">Tips</h3>
+        <ul>
+          <li>Ask: “Read Surah Al‑Fatiha in Jalalayn.”</li>
+          <li>Say “Stop” mid‑way to test barge‑in.</li>
+          <li>Try Arabic: “اقرأ من تفسير الجلالين سورة الفاتحة”.</li>
+        </ul>
+        <p class="muted">This page streams audio to the backend Realtime proxy, which talks to the OpenAI Realtime API.</p>
+      </section>
+    </main>
+  </body>
+  </html>
+
