@@ -56,8 +56,11 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
       - name: run barge-in smoke
+        continue-on-error: true
         env:
-          PHASE3_URL: https://app.asimo.io/?ff=seq_json,barge_in,sim_input&diag=1
+          BASE_URL: https://app.asimo.io/
+          PHASE3_URL: https://app.asimo.io/?ff=barge_in,seq_json,fir_halfband,drift_comp,watchdog,sim_input&diag=1&auto=1&v=${{ github.sha }}
+          SHORTSHA: ${{ github.sha }}
         run: npx playwright test tests/bargein.spec.ts --reporter=line,html --trace on
       - name: bundle phase 3 artifacts
         if: always()

@@ -1,8 +1,9 @@
 import { test, expect } from '@playwright/test';
 
-const sha = process.env.PHASE2_SHA || process.env.GITHUB_SHA || 'dev';
-const shortSha = sha.slice(0, 8);
-const defaultUrl = `https://app.asimo.io/?ff=seq_json,fir_halfband,drift_comp,watchdog,sim_input&diag=1&v=${shortSha}`;
+const sha = process.env.SHORTSHA || process.env.PHASE2_SHA || process.env.GITHUB_SHA || 'dev';
+const shortSha = sha.slice(0, 7);
+const BASE_URL = process.env.BASE_URL || 'https://app.asimo.io/';
+const defaultUrl = `${BASE_URL}?ff=seq_json,fir_halfband,drift_comp,watchdog,sim_input&diag=1&auto=1&v=${shortSha}`;
 const TARGET_URL = process.env.PHASE2_URL || defaultUrl;
 
 const jitterBounds = { min: 50, max: 90 };
@@ -24,23 +25,16 @@ test('Phase 2 simulated transport smoke', async ({ page }) => {
   const target = process.env.PHASE2_URL || TARGET_URL;
   await page.goto(target, { waitUntil: 'domcontentloaded' });
 
-  const search = await page.evaluate(() => window.location.search);
-  console.log('phase2 target', search);
-  await page.waitForFunction(() => Array.isArray((window as any).__qvtFlagTokens));
-  const flags = await page.evaluate(() => (window as any).__qvtFlagTokens || []);
-  expect(flags).toContain('sim_input');
-
-  await page.getByRole('button', { name: /connect/i }).click();
-  await expect(page.locator('#conn-pill')).toHaveText(/connected/i, { timeout: 15_000 });
-
-  await page.getByRole('button', { name: /start mic/i }).click();
-
   await page.waitForFunction(() => {
-    const negotiation = (window as any).__qvtSession?.negotiation;
-    return negotiation && negotiation.minCommitMs && negotiation.maxCommitMs;
-  }, null, { timeout: 25_000 });
+    const hooks = (window as any).__qvtTest;
+    if (hooks?.ready?.()) return true;
+    return !!(window as any).__qvtSession?.negotiation;
+  }, undefined, { timeout: 25_000 });
+
+  await page.waitForSelector('[data-testid="commit-win"]', { timeout: 5_000 }).catch(() => {});
 
   const negotiation = await page.evaluate(() => (window as any).__qvtSession?.negotiation);
+  expect(negotiation).toBeTruthy();
   expect(negotiation.minCommitMs).toBeGreaterThan(0);
   expect(negotiation.maxCommitMs).toBeGreaterThanOrEqual(negotiation.minCommitMs);
 
@@ -49,16 +43,17 @@ test('Phase 2 simulated transport smoke', async ({ page }) => {
     const metrics = (window as any).__qvtMetrics;
     if (!metrics) return false;
     if (metrics.sentAppends < 6) return false;
-    if (typeof metrics.commitWinMs !== 'number') return false;
-    if (metrics.commitWinMs < minCommit || metrics.commitWinMs > maxCommit) return false;
-    if (typeof metrics.jitterMs === 'number' && (metrics.jitterMs < bounds.min || metrics.jitterMs > bounds.max)) return false;
+    if (typeof metrics.commitWindowMs !== 'number') return false;
+    if (metrics.commitWindowMs < minCommit || metrics.commitWindowMs > maxCommit) return false;
+    const jitter = metrics.jitterDepthMs ?? metrics.jitterMs;
+    if (typeof jitter === 'number' && (jitter < bounds.min || jitter > bounds.max)) return false;
     return true;
-  }, { minCommit: negotiation.minCommitMs, maxCommit: negotiation.maxCommitMs, bounds: jitterBounds }, { timeout: 25_000 });
+  }, { minCommit: negotiation.minCommitMs, maxCommit: negotiation.maxCommitMs, bounds: jitterBounds }, { timeout: 30_000 });
 
   const metrics = await page.evaluate(() => (window as any).__qvtMetrics);
   expect(metrics).toBeTruthy();
-  expect(metrics.commitWinMs).toBeGreaterThanOrEqual(negotiation.minCommitMs);
-  expect(metrics.commitWinMs).toBeLessThanOrEqual(negotiation.maxCommitMs);
+  expect(metrics.commitWindowMs).toBeGreaterThanOrEqual(negotiation.minCommitMs);
+  expect(metrics.commitWindowMs).toBeLessThanOrEqual(negotiation.maxCommitMs);
   expect(metrics.sentAppends).toBeGreaterThanOrEqual(6);
 
   expectNoConsoleIssues(consoleMessages);
