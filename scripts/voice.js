@@ -496,6 +496,7 @@
         break;
       }
       case 'session.started':
+      case 'session.started@v1':
         applyNegotiation(msg.negotiation);
         try { if (typeof window !== 'undefined') window.__qvtSession = { negotiation: msg.negotiation || null, lastType: 'session.started' }; } catch {}
         startDiagPinger();
@@ -544,7 +545,8 @@
         }
         break;
       }
-      case 'session.updated': {
+      case 'session.updated':
+      case 'session.updated@v1': {
         applyNegotiation(msg.negotiation);
         try { if (typeof window !== 'undefined') window.__qvtSession = { negotiation: msg.negotiation || null, lastType: 'session.updated' }; } catch {}
         const ia = msg.ingress_audio || msg.ingress;
