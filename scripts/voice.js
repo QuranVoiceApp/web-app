@@ -24,6 +24,7 @@
     recvAudioChunks: 0,
     recvAudioBytes: 0,
     recvTranscriptChars: 0,
+    silenceFrames: 0,
   };
   const renderMetrics = () => {
     const m = $('metrics'); if (!m) return;
@@ -51,6 +52,7 @@
     sinkEl: null,
     analyser: null,
     visRaf: null,
+    autoStartMic: true,
   };
 
   const setConn = (ok) => {
@@ -110,6 +112,11 @@
 
         // Prepare/select devices after connection
         initDevices();
+        // Auto-start mic after connection if enabled
+        if (state.autoStartMic) {
+          // Slight delay ensures WS is stable
+          setTimeout(() => { if (!state.micActive) startMic(); }, 150);
+        }
       };
       ws.onmessage = (ev) => {
         if (typeof ev.data !== 'string') return; // we only expect text frames
@@ -216,6 +223,13 @@
         const ia = msg.ingress_audio;
         if (ia && typeof ia === 'object') {
           log('<= ingress', `chunks=${ia.chunks} bytes=${ia.bytes}`);
+          try {
+            const pill = $('ingress-pill');
+            if (pill) {
+              const kb = Math.round((ia.bytes || 0) / 1024);
+              pill.textContent = `Ingress ${ia.chunks || 0} / ${kb} KB`;
+            }
+          } catch {}
         }
         break;
       }
@@ -284,6 +298,11 @@
       if (state.meterFill) state.meterFill.style.width = pct + '%';
       if (state.meterText) state.meterText.textContent = `level: ${pct}% (rms ${rms.toFixed(2)})`;
       if (state.clipEl) state.clipEl.style.display = (clipped || peak > 0.98) ? '' : 'none';
+      // Silence detector (pre-downsample). If sustained silence, show warning.
+      const warn = $('silenceWarn');
+      if (rms < 0.005 && peak < 0.01) { metrics.silenceFrames++; }
+      else { metrics.silenceFrames = 0; }
+      if (warn) warn.style.display = metrics.silenceFrames > 20 ? '' : 'none';
     } catch {}
     return outBuf;
   }
