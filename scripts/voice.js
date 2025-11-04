@@ -404,7 +404,12 @@
         try {
           await ctx.audioWorklet.addModule('./scripts/pcm_worklet.js');
           const node = new AudioWorkletNode(ctx, 'pcm-capture');
-          source.connect(analyser); source.connect(node); node.connect(ctx.destination);
+          source.connect(analyser); source.connect(node);
+          // Keep processing graph alive without audible monitor unless explicitly enabled
+          const sink = ctx.createGain();
+          const monitor = (document.getElementById('monitor')||{}).checked;
+          sink.gain.value = monitor ? 1 : 0;
+          node.connect(sink); sink.connect(ctx.destination);
           node.port.onmessage = (ev) => {
             try {
               const input = ev.data && ev.data.data; if (!input) return; handleFrame(input);
@@ -418,7 +423,8 @@
       }
       if (captureMode === 'script') {
         const sp = ctx.createScriptProcessor(4096, 1, 1);
-        source.connect(analyser); source.connect(sp); sp.connect(ctx.destination);
+        source.connect(analyser); source.connect(sp);
+        const sink = ctx.createGain(); const monitor = (document.getElementById('monitor')||{}).checked; sink.gain.value = monitor ? 1 : 0; sp.connect(sink); sink.connect(ctx.destination);
         sp.onaudioprocess = (e) => {
           try { const input = e.inputBuffer.getChannelData(0); handleFrame(input); }
           catch (err) { log('script onaudioprocess error', err.message || err); }
