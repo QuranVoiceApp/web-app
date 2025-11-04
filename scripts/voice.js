@@ -17,6 +17,9 @@
   const urlParams = new URLSearchParams(location.search);
   const sendMode = (urlParams.get('send') || 'json').toLowerCase(); // 'json' (default) or 'binary'
   const diag = urlParams.get('diag') === '1' || urlParams.get('debug') === 'verbose';
+  const urlMode = (urlParams.get('mode') || '').toLowerCase(); // 'worklet'|'script'
+  const urlRaw = urlParams.get('raw') === '1' || urlParams.get('raw') === 'true';
+  const urlDeviceLabel = urlParams.get('deviceLabel') || urlParams.get('device') || '';
   log('sendMode', sendMode);
   if (diag) log('diag', 'on');
 
@@ -133,7 +136,18 @@
         } catch {}
 
         // Prepare/select devices after connection
-        initDevices();
+        initDevices().then(async () => {
+          // Auto-select by label if requested
+          if (urlDeviceLabel) {
+            try {
+              const devices = await navigator.mediaDevices.enumerateDevices();
+              const inputs = devices.filter(d => d.kind==='audioinput');
+              const match = inputs.find(d => (d.label||'').toLowerCase().includes(urlDeviceLabel.toLowerCase()));
+              if (match) { state.deviceId = match.deviceId; log('deviceMatch', `selected '${match.label}'`); }
+              else { log('deviceMatch', `no match for '${urlDeviceLabel}'`); }
+            } catch {}
+          }
+        }).catch(()=>{});
         // Auto-start mic after connection if enabled
         if (state.autoStartMic) {
           // Slight delay ensures WS is stable
@@ -506,6 +520,38 @@
     stopVisualizer();
   }
 
+  function buildConstraints() {
+    const raw = $('rawMic').checked;
+    const c = { audio: { echoCancellation: !raw, noiseSuppression: !raw, autoGainControl: !raw, channelCount: 1 }, video: false };
+    if (state.deviceId) c.audio.deviceId = { exact: state.deviceId };
+    return c;
+  }
+
+  async function autoRecordAnalyse(stream, ms=3000) {
+    try {
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+      const rec = new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 128000 });
+      const chunks = [];
+      rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+      await new Promise((resolve) => { rec.onstop = resolve; rec.start(); setTimeout(() => { try { rec.stop(); } catch {} }, ms); });
+      const blob = new Blob(chunks, { type: mime });
+      log('autoRecord blob', `type=${blob.type} size=${blob.size}B`);
+      // Decode and analyse
+      const arr = await blob.arrayBuffer();
+      const ac = new (window.AudioContext || window.webkitAudioContext)();
+      const buf = await ac.decodeAudioData(arr.slice(0));
+      const ch0 = buf.getChannelData(0);
+      let nz=0, peak=0, sum=0; for (let i=0;i<ch0.length;i++){ const a=Math.abs(ch0[i]); if (a>1e-4) nz++; if (a>peak) peak=a; sum+=ch0[i]*ch0[i]; }
+      const rms = Math.sqrt(sum/Math.max(1,ch0.length));
+      const pct = Math.round((nz/Math.max(1,ch0.length))*10000)/100;
+      log('autoRecord analysis', `nonZero=${pct}% peak=${peak.toFixed(3)} rms=${rms.toFixed(3)}`);
+      // Auto-download for offline inspection
+      try { const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`qvt-diag-${Date.now()}.webm`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),3000);} catch {}
+    } catch (e) {
+      log('autoRecord analyse error', e.message||e);
+    }
+  }
+
   $('btnConnect').addEventListener('click', () => {
     if (state.connected) { state.ws && state.ws.close(); } else { connect(); }
   });
@@ -629,6 +675,9 @@
   if (typeof saved.rawMic === 'boolean') $('rawMic').checked = saved.rawMic;
   if (saved.deviceId) state.deviceId = saved.deviceId;
   if (saved.speakerId) state.speakerId = saved.speakerId;
+  // URL overrides
+  if (urlRaw) $('rawMic').checked = true;
+  if (urlMode === 'worklet' || urlMode === 'script') { try { (document.getElementById('captureMode')||{}).value = urlMode; } catch {} }
   // URL overrides
   if (urlRaw) $('rawMic').checked = true;
   if (urlMode === 'worklet' || urlMode === 'script') { try { (document.getElementById('captureMode')||{}).value = urlMode; } catch {} }
