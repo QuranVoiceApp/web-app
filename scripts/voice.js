@@ -22,11 +22,52 @@
       seq_json: set.has('seq_json'),
       wt: set.has('wt'),
       wasm_vad: set.has('wasm_vad'),
+      fir_halfband: set.has('fir_halfband'),
+      drift_comp: set.has('drift_comp'),
+      watchdog: set.has('watchdog'),
+      sim_input: set.has('sim_input'),
       diag: set.has('diag') || urlParams.get('diag') === '1',
       telemetry: !set.has('no_telemetry'),
       wake_lock: !set.has('no_wake_lock'),
     };
   })();
+  try { window.__qvtFlagTokens = ffTokens.slice(); } catch {}
+  const activeFlags = ffTokens.join(',') || 'none';
+
+  const emitVersionBanner = () => {
+    const fallback = `QVT web dev (${new Date().toISOString().slice(0, 10)})`;
+    const logBanner = (msg, meta = {}) => {
+      try { window.__qvtBuild = Object.assign({ flags: activeFlags }, meta); } catch {}
+      console.log(`[qvt] ${msg} flags=${activeFlags}`);
+    };
+    try {
+      fetch('./BUILDINFO.txt?v=' + Date.now())
+        .then((res) => (res.ok ? res.text() : null))
+        .then((text) => {
+          if (!text) {
+            logBanner(fallback);
+            return;
+          }
+          const info = {};
+          text.split(/\r?\n/).forEach((line) => {
+            const idx = line.indexOf('=');
+            if (idx > 0) {
+              const key = line.slice(0, idx).trim();
+              const value = line.slice(idx + 1).trim();
+              if (key) info[key] = value;
+            }
+          });
+          const version = info.version || fallback;
+          logBanner(`${version} ${info.short_sha || ''}`.trim(), info);
+        })
+        .catch(() => logBanner(fallback));
+    } catch {
+      logBanner(fallback);
+    }
+  };
+
+  emitVersionBanner();
+  log('flags', activeFlags || 'none');
   const uaStr = (navigator.userAgent || '').toLowerCase();
   const isIOS = /iphone|ipad|ipod/.test(uaStr);
   const isSafari = uaStr.includes('safari') && !uaStr.includes('chrome');
@@ -39,6 +80,8 @@
   const urlDeviceLabel = urlParams.get('deviceLabel') || urlParams.get('device') || '';
   const urlGain = parseFloat(urlParams.get('gain') || '1');
   const softwareGain = isFinite(urlGain) && urlGain > 0 ? urlGain : 1;
+  const dsp = (typeof DSP !== 'undefined') ? DSP : null;
+  const watchdogLib = (typeof QVTWatchdog !== 'undefined') ? QVTWatchdog : null;
   const agcParam = (urlParams.get('agc') || '1').toLowerCase();
   const agcEnabledDefault = !(agcParam === '0' || agcParam === 'false' || agcParam === 'off');
   const defaultTargetRms = Math.max(0.01, parseFloat(urlParams.get('targetRms') || '0.12'));
@@ -88,7 +131,45 @@
     const nzPct = metrics.totalSamples ? Math.round((metrics.nzSamples / metrics.totalSamples) * 100) : 0;
     const rttDisplay = Math.round(state.net.rttMsEwma || 0);
     const winDisplay = commitWindowMs();
-    m.textContent = `sentAppends=${metrics.sentAppends} sentBytesAudio=${metrics.sentBytesAudio}B · recvAudioChunks=${metrics.recvAudioChunks} recvAudioBytes=${metrics.recvAudioBytes}B · transcriptChars=${metrics.recvTranscriptChars} · nz=${nzPct}% · rtt=${rttDisplay}ms · commitWin=${winDisplay}ms`;
+    const driftDisplay = (FF.drift_comp && typeof state.driftPpm === 'number') ? ` · drift=${Math.round(state.driftPpm)}ppm` : '';
+    const jitterDisplay = state.jitterMs ? ` · jitter=${Math.round(state.jitterMs)}ms` : '';
+    m.textContent = `sentAppends=${metrics.sentAppends} sentBytesAudio=${metrics.sentBytesAudio}B · recvAudioChunks=${metrics.recvAudioChunks} recvAudioBytes=${metrics.recvAudioBytes}B · transcriptChars=${metrics.recvTranscriptChars} · nz=${nzPct}% · rtt=${rttDisplay}ms · commitWin=${winDisplay}ms${driftDisplay}${jitterDisplay}`;
+    try {
+      if (typeof window !== 'undefined') {
+        window.__qvtMetrics = {
+          sentAppends: metrics.sentAppends,
+          sentBytesAudio: metrics.sentBytesAudio,
+          recvAudioChunks: metrics.recvAudioChunks,
+          recvAudioBytes: metrics.recvAudioBytes,
+          rttMs: rttDisplay,
+          commitWinMs: winDisplay,
+          driftPpm: state.driftPpm || 0,
+          jitterMs: state.jitterMs || 0,
+        };
+      }
+    } catch {}
+  };
+
+  const initDriftTracker = (startMs) => {
+    if (!FF.drift_comp || !dsp || typeof dsp.DriftTracker !== 'function') {
+      state.driftTracker = null;
+      state.driftPpm = 0;
+      return null;
+    }
+    if (!state.driftTracker || typeof state.driftTracker.reset !== 'function') {
+      state.driftTracker = new dsp.DriftTracker();
+    }
+    state.driftTracker.reset(startMs);
+    state.driftPpm = 0;
+    return state.driftTracker;
+  };
+
+  const teardownDriftTracker = () => {
+    if (state.driftTracker && typeof state.driftTracker.reset === 'function') {
+      state.driftTracker.reset();
+    }
+    state.driftTracker = null;
+    state.driftPpm = 0;
   };
 
   const state = {
@@ -123,6 +204,19 @@
     _pingTimer: null,
     _lastPing: null,
     _seq: 0,
+    simSource: null,
+    _captureHandleFrame: null,
+    firFilter: null,
+    driftTracker: null,
+    driftPpm: 0,
+    workletStalls: 0,
+    watchdogRecovers: 0,
+    watchdogInterval: null,
+    watchdogLastFrame: 0,
+    watchdogRecoveryAt: 0,
+    watchdogActiveMode: null,
+    watchdogController: null,
+    jitterMs: 0,
   };
 
   const ewma = (prev, value, alpha = 0.2) => (prev == null ? value : (alpha * value) + ((1 - alpha) * prev));
@@ -403,6 +497,7 @@
       }
       case 'session.started':
         applyNegotiation(msg.negotiation);
+        try { if (typeof window !== 'undefined') window.__qvtSession = { negotiation: msg.negotiation || null, lastType: 'session.started' }; } catch {}
         startDiagPinger();
         break;
       case 'session.audio_status@v1':
@@ -451,6 +546,7 @@
       }
       case 'session.updated': {
         applyNegotiation(msg.negotiation);
+        try { if (typeof window !== 'undefined') window.__qvtSession = { negotiation: msg.negotiation || null, lastType: 'session.updated' }; } catch {}
         const ia = msg.ingress_audio || msg.ingress;
         if (ia && typeof ia === 'object') {
           log('<= ingress', `chunks=${ia.chunks} bytes=${ia.bytes}`);
@@ -537,6 +633,44 @@
     return out;
   }
 
+  function resampleWithDelta(src, delta) {
+    if (!delta) return src;
+    const N = src.length;
+    if (N < 2) return src;
+    const M = N + delta;
+    if (M < 1) return src;
+    const out = new Float32Array(M);
+    const ratio = (N - 1) / (M - 1);
+    for (let i = 0; i < M; i++) {
+      const pos = i * ratio;
+      const idx = Math.floor(pos);
+      const frac = pos - idx;
+      const next = idx + 1 < N ? src[idx + 1] : src[idx];
+      out[i] = src[idx] + frac * (next - src[idx]);
+    }
+    return out;
+  }
+
+  function pcm16BytesToFloat32(buffer) {
+    const view = new DataView(buffer);
+    const len = buffer.byteLength / 2;
+    const out = new Float32Array(len);
+    for (let i = 0; i < len; i++) {
+      out[i] = view.getInt16(i * 2, true) / 0x8000;
+    }
+    return out;
+  }
+
+  function upsample24kTo48k(float32) {
+    const out = new Float32Array(float32.length * 2);
+    for (let i = 0, j = 0; i < float32.length; i++, j += 2) {
+      const sample = float32[i];
+      out[j] = sample;
+      out[j + 1] = sample;
+    }
+    return out;
+  }
+
   function float32ToPCM16(float32) {
     const outBuf = new ArrayBuffer(float32.length * 2);
     const dv = new DataView(outBuf);
@@ -574,373 +708,667 @@
     return btoa(bin);
   }
 
-  async function startMic() {
-    if (!state.connected) return log('Not connected');
-    if (state.micActive) return;
-    try {
-      // Clear any residual buffered audio on server
-      try { if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify({ type: 'input_audio_buffer.clear' })); } catch {}
-      state._seq = 0;
-      const constraints = buildConstraints();
-      try { log('getUserMedia constraints', JSON.stringify(constraints)); } catch {}
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
-      const source = ctx.createMediaStreamSource(stream);
-      const analyser = ctx.createAnalyser(); analyser.fftSize = 2048; analyser.smoothingTimeConstant = 0.85;
-      // Choose capture mode
-      let captureMode = (document.getElementById('captureMode')||{value:'worklet'}).value || 'worklet';
-      if (!('audioWorklet' in ctx) && captureMode === 'worklet') captureMode = 'script';
-      let processor = null;
-      if (captureMode === 'worklet') {
-        try {
-          await ctx.audioWorklet.addModule('./scripts/pcm_worklet.js');
-          const node = new AudioWorkletNode(ctx, 'pcm-capture');
-          source.connect(analyser); source.connect(node);
-          // Keep processing graph alive without audible monitor unless explicitly enabled
-          const sink = ctx.createGain();
-          const monitor = (document.getElementById('monitor')||{}).checked;
-          sink.gain.value = monitor ? 1 : 0;
-          node.connect(sink); sink.connect(ctx.destination);
-          state.framesSeen = 0;
-          node.port.onmessage = (ev) => {
-            try {
-              const input = ev.data && ev.data.data; if (!input) return; state.framesSeen = (state.framesSeen||0)+1; handleFrame(input);
-            } catch (e) { log('worklet onmessage error', e.message || e); }
-          };
-          processor = node;
-          log('capture', 'worklet attached');
-        } catch (e) {
-          log('worklet error', e.message || e); captureMode = 'script';
-        }
-      }
-      if (captureMode === 'script') {
-        const sp = ctx.createScriptProcessor(4096, 1, 1);
-        source.connect(analyser); source.connect(sp);
-        const sink = ctx.createGain(); const monitor = (document.getElementById('monitor')||{}).checked; sink.gain.value = monitor ? 1 : 0; sp.connect(sink); sink.connect(ctx.destination);
-        sp.onaudioprocess = (e) => {
-          try { const input = e.inputBuffer.getChannelData(0); handleFrame(input); }
-          catch (err) { log('script onaudioprocess error', err.message || err); }
-        };
-        processor = sp; log('capture', 'script processor attached');
-      }
-      // Ring buffer for ~20 ms framing at server sample rate (default 24 kHz)
-      let carry = new Float32Array(0);
-      const batchMs = Math.max(5, Math.min(100, parseFloat(urlParams.get('batchMs') || '20')));
-      const gateParam = Math.max(0, parseFloat(urlParams.get('gate') || '0.002')); // low default gate (~-54 dB)
-      const MAX_BUFFERED = 512 * 1024; // backpressure threshold
-      let flushTimer = null;
-      const flushMs = Math.max(15, parseInt(urlParams.get('flushMs') || String(batchMs + 10)));
+  async function configureCapture(ctx, source, opts = {}) {
+    const analyser = opts.analyser || ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.85;
+    let captureMode = opts.captureMode || (document.getElementById('captureMode') || { value: 'worklet' }).value || 'worklet';
+    if (!('audioWorklet' in ctx) && captureMode === 'worklet') captureMode = 'script';
+    const monitor = opts.monitor ?? (document.getElementById('monitor') || {}).checked;
+    let processor = null;
 
-      async function handleFrame(input) {
-        // Downsample to 24 kHz
-        const ds = downsample48kTo24k(input);
-        // Do not apply gain yet; apply per-chunk so AGC can use chunk RMS
-        // Accumulate into carry
-        let combined;
-        if (!carry.length) {
-          combined = ds;
-        } else {
-          combined = new Float32Array(carry.length + ds.length);
-          combined.set(carry, 0);
-          combined.set(ds, carry.length);
-        }
-        const chunkSamples = Math.max(1, Math.round((state.serverInHz || 24000) * (batchMs / 1000)));
+    const batchMs = Math.max(5, Math.min(100, parseFloat(urlParams.get('batchMs') || '20')));
+    const gateParam = Math.max(0, parseFloat(urlParams.get('gate') || '0.002'));
+    const MAX_BUFFERED = 512 * 1024;
+    const flushMs = Math.max(15, parseInt(urlParams.get('flushMs') || String(batchMs + 10)));
+    let carry = new Float32Array(0);
+    let flushTimer = null;
+    const wantFir = !!(FF.fir_halfband && dsp && typeof dsp.FirFilter === 'function');
+    let firFilter = (wantFir && captureMode === 'script') ? new dsp.FirFilter(dsp.HALF_BAND_COEFFS) : null;
 
-        // Track non-zero samples for diagnostics
-        try {
-          let nz = 0; for (let i=0;i<ds.length;i++) if (Math.abs(ds[i]) > 1e-4) nz++;
-          metrics.nzSamples += nz; metrics.totalSamples += ds.length; if ((metrics.sentAppends % 20) === 0) renderMetrics();
-          if (diag && (metrics.sentAppends % 50 === 0)) {
-            const sample = Array.from(ds.slice(0, 8)).map(v => Number(v.toFixed(4)));
-            log('frame sample', JSON.stringify(sample));
-          }
-        } catch {}
 
-        // Flush in fixed-size chunks
-        let offset = 0;
-        let sentAny = false;
-        while ((combined.length - offset) >= chunkSamples) {
-          const view = combined.subarray(offset, offset + chunkSamples);
-          offset += chunkSamples;
-
-          // Optional noise gate
-          const gateRms = (state.gateRms != null ? state.gateRms : gateParam);
-          if (gateRms > 0) {
-            let sum = 0; for (let i=0;i<view.length;i++) { const s=view[i]; sum += s*s; }
-            const rms = Math.sqrt(sum / Math.max(1, view.length));
-            if (rms < gateRms) continue; // drop very quiet chunk
-          }
-          // Adaptive gain and soft limiter
-          try {
-            // Measure chunk RMS pre-gain
-            let sum = 0; for (let i=0;i<view.length;i++){ const s=view[i]; sum += s*s; }
-            const rms = Math.sqrt(sum / Math.max(1, view.length));
-            if (state.agcEnabled) {
-              const eps = 1e-6;
-              const tgt = state.targetRms || defaultTargetRms;
-              const desired = tgt / Math.max(rms, eps);
-              // Smooth adaptation to avoid pumping
-              state.agcGain = Math.max(0.1, Math.min(10, state.agcGain * (1 - agcRate) + desired * agcRate));
-            }
-            const gEff = (state.softwareGain || 1) * (state.agcEnabled ? state.agcGain : 1);
-            // Apply gain and limiter in-place
-            for (let i=0;i<view.length;i++) {
-              let v = view[i] * gEff;
-              // Soft limiter with knee near limiterThr
-              const a = Math.abs(v);
-              if (a > limiterThr) {
-                const sign = v < 0 ? -1 : 1;
-                const excess = a - limiterThr;
-                const knee = 1 - limiterThr;
-                // Map excess smoothly into remaining headroom using tanh curve
-                const comp = Math.tanh((excess / Math.max(1e-6, knee)) * 2.0) * knee;
-                v = sign * (limiterThr + comp);
-              }
-              // Final clamp to [-1,1]
-              if (v > 1) v = 1; else if (v < -1) v = -1;
-              view[i] = v;
-            }
-          } catch {}
-
-          const pcmBuf = float32ToPCM16(view);
-
-          if (state.ws && state.ws.readyState === 1) {
-            try {
-              // Backpressure handling: if buffered is too large, skip sending
-              const ba = state.ws.bufferedAmount || 0;
-              if (ba > MAX_BUFFERED * 4) { if (diag) log('backpressure drop', String(ba)); continue; }
-              if (FF.seq_json) {
-                const b64 = arrayBufferToBase64(pcmBuf);
-                state._seq = (state._seq || 0) + 1;
-                state.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', seq: state._seq, base64: b64 }));
-              } else if (sendMode === 'binary') {
-                state.ws.send(pcmBuf);
-              } else {
-                const b64 = arrayBufferToBase64(pcmBuf);
-                const evt = { type: 'input_audio_buffer.append', audio: b64 };
-                state.ws.send(JSON.stringify(evt));
-              }
-              metrics.sentAppends += 1; metrics.sentBytesAudio += pcmBuf.byteLength; state.lastAudioSentAt = Date.now(); renderMetrics();
-              // Track commit budget (ms)
-              state.msSinceLastCommit = (state.msSinceLastCommit || 0) + Math.round((view.length / (state.serverInHz||24000)) * 1000);
-              if (metrics.sentAppends <= 3 || metrics.sentAppends % 50 === 0) {
-                // Quick stats from the chunk we sent
-                let peak = 0, sum = 0; for (let i = 0; i < view.length; i++){ const a = Math.abs(view[i]); peak = Math.max(peak, a); sum += a*a; }
-                const rms = Math.sqrt(sum / Math.max(1, view.length));
-                log('=> audio', `mode=${sendMode} bytes=${pcmBuf.byteLength} peak=${peak.toFixed(2)} rms=${rms.toFixed(2)} buffered=${state.ws.bufferedAmount}`);
-              }
-            } catch {}
-          }
-          sentAny = true;
-          // Arm quick inactivity-based commit after each send; server VAD will still drive create_response if enabled
-          armInactivityCommit();
-          // Straggler flush: if no more audio arrives very soon, commit to avoid turn delay
-          try { if (state.stragglerTimer) clearTimeout(state.stragglerTimer); } catch {}
-          state.stragglerTimer = setTimeout(() => {
-            try {
-              if (state.ws && state.ws.readyState === 1) {
-                if ((state.msSinceLastCommit||0) >= commitWindowMs()) {
-                  state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
-                  state.msSinceLastCommit = 0;
-                  if (!state.responseActive) {
-                    state.ws.send(JSON.stringify({ type: 'response.create' }));
-                  }
-                  log('auto-commit (straggler flush)');
-                }
-              }
-            } catch {}
-          }, 30);
-        }
-        // Preserve leftover samples for next frame
-        carry = (offset < combined.length) ? combined.subarray(offset).slice(0) : new Float32Array(0);
-        // Time-based flush for leftover to avoid waiting when callbacks jitter (esp. iOS)
-        try {
-          if (sentAny && flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
-          if (carry.length > 0 && !flushTimer) {
-            flushTimer = setTimeout(() => {
-              try {
-                if (!carry.length) { flushTimer = null; return; }
-                const view = carry; carry = new Float32Array(0);
-                // Gate
-                const _gate = (state.gateRms != null ? state.gateRms : gateParam);
-                if (_gate > 0) {
-                  let sum = 0; for (let i=0;i<view.length;i++){ const s=view[i]; sum+=s*s; }
-                  const rms = Math.sqrt(sum / Math.max(1, view.length));
-                  if (rms < _gate) { flushTimer = null; return; }
-                }
-                // AGC + limiter
-                try {
-                  let sum = 0; for (let i=0;i<view.length;i++){ const s=view[i]; sum+=s*s; }
-                  const rms = Math.sqrt(sum / Math.max(1, view.length));
-                  if (state.agcEnabled) {
-                    const eps = 1e-6; const tgt = state.targetRms || defaultTargetRms;
-                    const desired = tgt / Math.max(rms, eps);
-                    state.agcGain = Math.max(0.1, Math.min(10, state.agcGain * (1 - agcRate) + desired * agcRate));
-                  }
-                  const gEff = (state.softwareGain || 1) * (state.agcEnabled ? state.agcGain : 1);
-                  for (let i=0;i<view.length;i++){
-                    let v=view[i]*gEff; const a=Math.abs(v);
-                    if (a>limiterThr){ const sign=v<0?-1:1; const excess=a-limiterThr; const knee=1-limiterThr; const comp=Math.tanh((excess/Math.max(1e-6,knee))*2.0)*knee; v=sign*(limiterThr+comp); }
-                    if (v>1) v=1; else if (v<-1) v=-1; view[i]=v;
-                  }
-                } catch {}
-                const pcmBuf = float32ToPCM16(view);
-                if (state.ws && state.ws.readyState === 1) {
-                  try {
-                    const ba = state.ws.bufferedAmount || 0; if (ba > MAX_BUFFERED * 4) { if (diag) log('backpressure drop', String(ba)); flushTimer = null; return; }
-                    if (FF.seq_json) {
-                      const b64 = arrayBufferToBase64(pcmBuf);
-                      state._seq = (state._seq || 0) + 1;
-                      state.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', seq: state._seq, base64: b64 }));
-                    } else if (sendMode === 'binary') {
-                      state.ws.send(pcmBuf);
-                    } else {
-                      state.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: arrayBufferToBase64(pcmBuf) }));
-                    }
-                    metrics.sentAppends += 1; metrics.sentBytesAudio += pcmBuf.byteLength; state.lastAudioSentAt = Date.now(); renderMetrics();
-                    // Track commit budget (ms) for leftover flush path as well
-                    state.msSinceLastCommit = (state.msSinceLastCommit || 0) + Math.round((view.length / (state.serverInHz||24000)) * 1000);
-                  } catch {}
-                }
-                armInactivityCommit();
-              } finally { flushTimer = null; }
-            }, flushMs);
-          }
-        } catch {}
-      }
-      try { await ctx.resume(); log('AudioContext state', ctx.state, 'mode', captureMode); } catch (e) { log('AudioContext resume error', e.message || e); }
+    const handleFrame = (input) => {
+      markWatchdogFrame();
+      const filtered = firFilter ? firFilter.process(input) : input;
+      const ds = downsample48kTo24k(filtered);
       try {
-        const tr = stream.getAudioTracks()[0];
-        if (tr) {
-          tr.enabled = true;
-          tr.onmute = () => log('track mute event');
-          tr.onunmute = () => log('track unmute event');
-          try { log('track settings', JSON.stringify(tr.getSettings())); } catch {}
-          if (diag) {
-            try { if (tr.getConstraints) log('track constraints', JSON.stringify(tr.getConstraints())); } catch {}
-            try { if (tr.getCapabilities) log('track caps', JSON.stringify(tr.getCapabilities())); } catch {}
-          }
+        const jitterEstimate = Math.max(40, Math.min(120, commitWindowMs() - 40));
+        state.jitterMs = Math.round(jitterEstimate);
+      } catch {}
+      try {
+        let nz = 0;
+        for (let i = 0; i < ds.length; i++) if (Math.abs(ds[i]) > 1e-4) nz++;
+        metrics.nzSamples += nz;
+        metrics.totalSamples += ds.length;
+        if ((metrics.sentAppends % 20) === 0) renderMetrics();
+        if (diag && (metrics.sentAppends % 50 === 0)) {
+          const sample = Array.from(ds.slice(0, 8)).map(v => Number(v.toFixed(4)));
+          log('frame sample', JSON.stringify(sample));
         }
       } catch {}
-      state.mediaStream = stream; state.audioContext = ctx; /* state.processor set above */ state.analyser = analyser; state.micActive = true;
-      $('btnMic').textContent = 'Stop Mic';
-      log('Mic started');
-      // Safari/iOS fallback: if no frames seen shortly after starting, fallback to ScriptProcessor
+
+      let combined;
+      if (!carry.length) {
+        combined = ds;
+      } else {
+        combined = new Float32Array(carry.length + ds.length);
+        combined.set(carry, 0);
+        combined.set(ds, carry.length);
+      }
+      const chunkSamples = Math.max(1, Math.round((state.serverInHz || 24000) * (batchMs / 1000)));
+      let offset = 0;
+      let sentAny = false;
+
+      while ((combined.length - offset) >= chunkSamples) {
+        let chunk = combined.subarray(offset, offset + chunkSamples);
+        offset += chunkSamples;
+
+        const gateRms = (state.gateRms != null ? state.gateRms : gateParam);
+        if (gateRms > 0) {
+          let sum = 0;
+          for (let i = 0; i < chunk.length; i++) { const s = chunk[i]; sum += s * s; }
+          const rms = Math.sqrt(sum / Math.max(1, chunk.length));
+          if (rms < gateRms) continue;
+        }
+
+        try {
+          let sum = 0;
+          for (let i = 0; i < chunk.length; i++) { const s = chunk[i]; sum += s * s; }
+          const rms = Math.sqrt(sum / Math.max(1, chunk.length));
+          if (state.agcEnabled) {
+            const eps = 1e-6;
+            const tgt = state.targetRms || defaultTargetRms;
+            const desired = tgt / Math.max(rms, eps);
+            state.agcGain = Math.max(0.1, Math.min(10, state.agcGain * (1 - agcRate) + desired * agcRate));
+          }
+          const gEff = (state.softwareGain || 1) * (state.agcEnabled ? state.agcGain : 1);
+          for (let i = 0; i < chunk.length; i++) {
+            let v = chunk[i] * gEff;
+            const a = Math.abs(v);
+            if (a > limiterThr) {
+              const sign = v < 0 ? -1 : 1;
+              const excess = a - limiterThr;
+              const knee = 1 - limiterThr;
+              const comp = Math.tanh((excess / Math.max(1e-6, knee)) * 2.0) * knee;
+              v = sign * (limiterThr + comp);
+            }
+            if (v > 1) v = 1; else if (v < -1) v = -1;
+            chunk[i] = v;
+          }
+        } catch {}
+
+        if (FF.drift_comp && state.driftTracker) {
+          try {
+            const { adjust, driftPpm } = state.driftTracker.ingest(chunk.length, performance.now(), state.serverInHz || 24000);
+            state.driftPpm = driftPpm;
+            if (adjust !== 0 && chunk.length > 1) {
+              chunk = resampleWithDelta(chunk, adjust);
+            }
+          } catch {}
+        }
+
+        const pcmBuf = float32ToPCM16(chunk);
+        if (state.ws && state.ws.readyState === 1) {
+          try {
+            const ba = state.ws.bufferedAmount || 0;
+            if (ba > MAX_BUFFERED * 4) { if (diag) log('backpressure drop', String(ba)); continue; }
+            if (FF.seq_json) {
+              const b64 = arrayBufferToBase64(pcmBuf);
+              state._seq = (state._seq || 0) + 1;
+              state.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', seq: state._seq, base64: b64 }));
+            } else if (sendMode === 'binary') {
+              state.ws.send(pcmBuf);
+            } else {
+              const b64 = arrayBufferToBase64(pcmBuf);
+              state.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: b64 }));
+            }
+            metrics.sentAppends += 1;
+            metrics.sentBytesAudio += pcmBuf.byteLength;
+            state.lastAudioSentAt = Date.now();
+            renderMetrics();
+            state.msSinceLastCommit = (state.msSinceLastCommit || 0) + Math.round((chunk.length / (state.serverInHz || 24000)) * 1000);
+            if (metrics.sentAppends <= 3 || metrics.sentAppends % 50 === 0) {
+              let peak = 0, sum = 0;
+              for (let i = 0; i < chunk.length; i++) { const a = Math.abs(chunk[i]); peak = Math.max(peak, a); sum += a * a; }
+              const rms = Math.sqrt(sum / Math.max(1, chunk.length));
+              log('=> audio', `mode=${sendMode} bytes=${pcmBuf.byteLength} peak=${peak.toFixed(2)} rms=${rms.toFixed(2)} buffered=${state.ws.bufferedAmount}`);
+            }
+          } catch {}
+        }
+        sentAny = true;
+        armInactivityCommit();
+        try { if (state.stragglerTimer) clearTimeout(state.stragglerTimer); } catch {}
+        state.stragglerTimer = setTimeout(() => {
+          try {
+            if (state.ws && state.ws.readyState === 1) {
+              if ((state.msSinceLastCommit || 0) >= commitWindowMs()) {
+                state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+                state.msSinceLastCommit = 0;
+                if (!state.responseActive) {
+                  state.ws.send(JSON.stringify({ type: 'response.create' }));
+                }
+                log('auto-commit (straggler flush)');
+              }
+            }
+          } catch {}
+        }, 30);
+      }
+
+      carry = (offset < combined.length) ? combined.subarray(offset).slice(0) : new Float32Array(0);
       try {
+        if (sentAny && flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+        if (carry.length > 0 && !flushTimer) {
+          flushTimer = setTimeout(() => {
+            try {
+              if (!carry.length) { flushTimer = null; return; }
+              let chunk = carry;
+              carry = new Float32Array(0);
+              const _gate = (state.gateRms != null ? state.gateRms : gateParam);
+              if (_gate > 0) {
+                let sum = 0; for (let i = 0; i < chunk.length; i++) { const s = chunk[i]; sum += s * s; }
+                const rms = Math.sqrt(sum / Math.max(1, chunk.length));
+                if (rms < _gate) { flushTimer = null; return; }
+              }
+              try {
+                let sum = 0;
+                for (let i = 0; i < chunk.length; i++) { const s = chunk[i]; sum += s * s; }
+                const rms = Math.sqrt(sum / Math.max(1, chunk.length));
+                if (state.agcEnabled) {
+                  const eps = 1e-6;
+                  const tgt = state.targetRms || defaultTargetRms;
+                  const desired = tgt / Math.max(rms, eps);
+                  state.agcGain = Math.max(0.1, Math.min(10, state.agcGain * (1 - agcRate) + desired * agcRate));
+                }
+                const gEff = (state.softwareGain || 1) * (state.agcEnabled ? state.agcGain : 1);
+                for (let i = 0; i < chunk.length; i++) {
+                  let v = chunk[i] * gEff;
+                  const a = Math.abs(v);
+                  if (a > limiterThr) {
+                    const sign = v < 0 ? -1 : 1;
+                    const excess = a - limiterThr;
+                    const knee = 1 - limiterThr;
+                    const comp = Math.tanh((excess / Math.max(1e-6, knee)) * 2.0) * knee;
+                    v = sign * (limiterThr + comp);
+                  }
+                  if (v > 1) v = 1; else if (v < -1) v = -1;
+                  chunk[i] = v;
+                }
+              } catch {}
+              if (FF.drift_comp && state.driftTracker) {
+                try {
+                  const { adjust, driftPpm } = state.driftTracker.ingest(chunk.length, performance.now(), state.serverInHz || 24000);
+                  state.driftPpm = driftPpm;
+                  if (adjust !== 0 && chunk.length > 1) {
+                    chunk = resampleWithDelta(chunk, adjust);
+                  }
+                } catch {}
+              }
+              const pcmBuf = float32ToPCM16(chunk);
+              if (state.ws && state.ws.readyState === 1) {
+                try {
+                  const ba = state.ws.bufferedAmount || 0;
+                  if (ba > MAX_BUFFERED * 4) { if (diag) log('backpressure drop', String(ba)); flushTimer = null; return; }
+                  if (FF.seq_json) {
+                    const b64 = arrayBufferToBase64(pcmBuf);
+                    state._seq = (state._seq || 0) + 1;
+                    state.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', seq: state._seq, base64: b64 }));
+                  } else if (sendMode === 'binary') {
+                    state.ws.send(pcmBuf);
+                  } else {
+                    state.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: arrayBufferToBase64(pcmBuf) }));
+                  }
+                  metrics.sentAppends += 1;
+                  metrics.sentBytesAudio += pcmBuf.byteLength;
+                  state.lastAudioSentAt = Date.now();
+                  renderMetrics();
+                  flushTimer = null;
+                } catch {}
+              }
+            } catch {}
+          }, flushMs);
+        }
+      } catch {}
+    };
+
+    state.firFilter = firFilter || null;
+    state._captureHandleFrame = handleFrame;
+    let activeMode = 'pending';
+    let monitorNode = null;
+    let connectingWorklet = false;
+
+    const syncWatchdogState = () => {
+      if (!FF.watchdog) return;
+      const ctrl = state.watchdogController;
+      if (!ctrl || typeof ctrl.getState !== 'function') return;
+      try {
+        const info = ctrl.getState();
+        state.watchdogLastFrame = info.lastFrameAt;
+        state.watchdogRecoveryAt = info.recoveryAt;
+        state.workletStalls = info.stalls;
+        state.watchdogRecovers = info.recovers;
+      } catch {}
+    };
+
+    const markWatchdogFrame = (nowOverride) => {
+      if (!FF.watchdog) return;
+      try {
+        const now = Number.isFinite(nowOverride) ? nowOverride : performance.now();
+        if (state.watchdogController && typeof state.watchdogController.noteFrame === 'function') {
+          state.watchdogController.noteFrame(now);
+          syncWatchdogState();
+        } else {
+          state.watchdogLastFrame = now;
+        }
+        state.watchdogActiveMode = activeMode;
+      } catch {}
+    };
+
+    const cleanupProcessor = () => {
+      if (processor) {
+        try { source.disconnect(processor); } catch {}
+        try { processor.disconnect(); } catch {}
+      }
+      processor = null;
+      if (monitorNode) {
+        try { monitorNode.disconnect(); } catch {}
+        monitorNode = null;
+      }
+    };
+
+    const attachScriptProcessor = () => {
+      cleanupProcessor();
+      try {
+        if (wantFir) {
+          try { firFilter = new dsp.FirFilter(dsp.HALF_BAND_COEFFS); }
+          catch { firFilter = null; }
+        } else {
+          firFilter = null;
+        }
+      } catch { firFilter = null; }
+      state.firFilter = firFilter;
+      const sp = ctx.createScriptProcessor(4096, 1, 1);
+      try { source.connect(sp); } catch {}
+      monitorNode = ctx.createGain();
+      monitorNode.gain.value = monitor ? 1 : 0;
+      sp.connect(monitorNode);
+      monitorNode.connect(ctx.destination);
+      sp.onaudioprocess = (e) => {
+        try {
+          const input = e.inputBuffer.getChannelData(0);
+          handleFrame(input);
+        } catch (err) {
+          log('script onaudioprocess error', err.message || err);
+        }
+      };
+      processor = sp;
+      state.processor = sp;
+      activeMode = 'script';
+      captureMode = 'script';
+      if (FF.drift_comp) {
+        try { initDriftTracker(performance.now()); } catch { initDriftTracker(); }
+      }
+      markWatchdogFrame();
+      log('capture', 'script processor attached');
+    };
+
+    const attachWorkletNode = async () => {
+      if (connectingWorklet) return;
+      connectingWorklet = true;
+      try {
+        cleanupProcessor();
+        await ctx.audioWorklet.addModule('./scripts/pcm_worklet.js');
+        const node = new AudioWorkletNode(ctx, 'pcm-capture');
+        try { node.port.postMessage({ type: 'configure_fir', enabled: wantFir, coeffs: wantFir ? Array.from(dsp.HALF_BAND_COEFFS) : null }); } catch {}
+        monitorNode = ctx.createGain();
+        monitorNode.gain.value = monitor ? 1 : 0;
+        node.connect(monitorNode);
+        monitorNode.connect(ctx.destination);
+        try { source.connect(node); } catch {}
+        state.framesSeen = 0;
+        node.port.onmessage = (ev) => {
+          try {
+            const input = ev.data && ev.data.data;
+            if (!input) return;
+            state.framesSeen = (state.framesSeen || 0) + 1;
+            handleFrame(input);
+          } catch (e) { log('worklet onmessage error', e.message || e); }
+        };
+        processor = node;
+        state.processor = node;
+        firFilter = null;
+        state.firFilter = null;
+        activeMode = 'worklet';
+        captureMode = 'worklet';
+        if (FF.drift_comp) {
+          try { initDriftTracker(performance.now()); } catch { initDriftTracker(); }
+        }
+        markWatchdogFrame();
+        log('capture', 'worklet attached');
         setTimeout(() => {
           try {
-            if (!state.micActive) return;
-            if ((state.framesSeen||0) === 0) {
+            if (activeMode === 'worklet' && (state.framesSeen || 0) === 0) {
               log('fallback', 'no worklet frames; switching to script');
-              try { processor && processor.disconnect(); } catch {}
-              const sp = ctx.createScriptProcessor(4096, 1, 1);
-              source.connect(sp);
-              const sink2 = ctx.createGain(); sink2.gain.value = 0; sp.connect(sink2); sink2.connect(ctx.destination);
-              sp.onaudioprocess = (e) => { try { const input = e.inputBuffer.getChannelData(0); handleFrame(input); } catch (err) { log('script onaudioprocess error', err.message||err); } };
-              state.processor = sp;
+              const now = performance.now();
+              if (state.watchdogController && typeof state.watchdogController.registerFallback === 'function') {
+                state.watchdogController.registerFallback(now);
+                syncWatchdogState();
+              } else {
+                state.workletStalls = (state.workletStalls || 0) + 1;
+                if (FF.watchdog) state.watchdogRecoveryAt = now + 4000;
+              }
+              attachScriptProcessor();
+              if (FF.watchdog) syncWatchdogState();
             }
           } catch {}
         }, 600);
-      } catch {}
-      // Ambient calibration (no UI): ~1.5s quick pass to set targetRms and gateRms based on environment (with warm-up)
+      } finally {
+        connectingWorklet = false;
+      }
+    };
+
+    source.connect(analyser);
+
+    if (captureMode === 'worklet') {
       try {
-        const calMs = Math.max(800, Math.min(4000, parseInt(urlParams.get('calMs')||'1500')));
-        await new Promise(r=>setTimeout(r,120)); // warm-up for analyser to settle
-        const t0 = performance.now();
-        let sum=0, n=0, peak=0, nonZero=0;
-        const tmp = new Float32Array(analyser.fftSize);
-        while ((performance.now()-t0) < calMs) {
-          analyser.getFloatTimeDomainData(tmp);
-          let s=0, p=0; for (let i=0;i<tmp.length;i++){ const a=Math.abs(tmp[i]); s+=a*a; if (a>p) p=a; }
-          const rms = Math.sqrt(s/Math.max(1,tmp.length));
-          if (rms > 1e-5) nonZero++;
-          sum += rms; n += 1; if (p>peak) peak=p;
-          await new Promise(r=>setTimeout(r, 30));
-        }
-        const amb = (n && nonZero) ? (sum/n) : 0.003;
-        const tgt = Math.max(0.06, Math.min(0.18, amb * 4));
-        // Gate slightly above ambient (but not too high)
-        const gate = Math.max(0.001, Math.min(0.01, amb * 2));
-        state.targetRms = tgt; state.gateRms = gate; state.agcGain = 1;
-        log('calibrated', JSON.stringify({ ambientRms: Number(amb.toFixed(4)), targetRms: Number(tgt.toFixed(3)), gateRms: Number(gate.toFixed(3)) }));
+        await attachWorkletNode();
+      } catch (e) {
+        log('worklet error', e.message || e);
+      }
+    }
+
+    if (activeMode !== 'worklet') {
+      attachScriptProcessor();
+    }
+
+    const startWatchdog = () => {
+      if (!FF.watchdog) return;
+      if (state.watchdogInterval) {
+        try { clearInterval(state.watchdogInterval); } catch {}
+      }
+      state.watchdogInterval = null;
+      state.watchdogRecoveryAt = 0;
+      markWatchdogFrame();
+      let ticking = false;
+      const tick = () => {
+        if (ticking) return;
+        ticking = true;
+        Promise.resolve().then(async () => {
+          const now = performance.now();
+          const ctrl = state.watchdogController;
+          if (ctrl && typeof ctrl.shouldFallback === 'function') {
+            if (activeMode === 'worklet' && ctrl.shouldFallback(now)) {
+              log('watchdog', 'worklet stall detected; switching to script');
+              ctrl.registerFallback(now);
+              attachScriptProcessor();
+              syncWatchdogState();
+            } else if (activeMode === 'script' && ctrl.shouldRecover(now)) {
+              try {
+                await attachWorkletNode();
+                if (activeMode === 'worklet' && typeof ctrl.registerRecoverySuccess === 'function') {
+                  ctrl.registerRecoverySuccess(performance.now());
+                  syncWatchdogState();
+                  log('watchdog', 'worklet recovered');
+                } else if (typeof ctrl.registerRecoveryFailure === 'function') {
+                  ctrl.registerRecoveryFailure(now);
+                  syncWatchdogState();
+                }
+              } catch (err) {
+                log('watchdog', `worklet recovery failed: ${err?.message || err}`);
+                if (typeof ctrl.registerRecoveryFailure === 'function') {
+                  ctrl.registerRecoveryFailure(performance.now());
+                  syncWatchdogState();
+                }
+              }
+            }
+          } else {
+            if (activeMode === 'worklet') {
+              const last = state.watchdogLastFrame || now;
+              if ((now - last) > 600) {
+                log('watchdog', 'worklet stall detected; switching to script');
+                state.workletStalls = (state.workletStalls || 0) + 1;
+                attachScriptProcessor();
+                state.watchdogRecoveryAt = now + 4000;
+              }
+            } else if (activeMode === 'script' && state.watchdogRecoveryAt && now >= state.watchdogRecoveryAt) {
+              try {
+                await attachWorkletNode();
+                if (activeMode === 'worklet') {
+                  state.watchdogRecovers = (state.watchdogRecovers || 0) + 1;
+                  state.watchdogRecoveryAt = 0;
+                  log('watchdog', 'worklet recovered');
+                }
+              } catch (err) {
+                log('watchdog', `worklet recovery failed: ${err?.message || err}`);
+                state.watchdogRecoveryAt = now + 5000;
+              }
+            }
+          }
+        }).catch((err) => {
+          log('watchdog', err?.message || err);
+        }).finally(() => { ticking = false; });
+      };
+      state.watchdogInterval = setInterval(tick, 250);
+    };
+
+    startWatchdog();
+
+    return { analyser, processor, mode: activeMode };
+  }
+
+  async function buildSimulatedSource() {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+    const resp = await fetch('./testdata/sample_24k_pcm16.raw');
+    if (!resp.ok) throw new Error(`sample fetch failed: ${resp.status}`);
+    const arrayBuf = await resp.arrayBuffer();
+    const float24 = pcm16BytesToFloat32(arrayBuf);
+    const float48 = upsample24kTo48k(float24);
+    const audioBuffer = ctx.createBuffer(1, float48.length, 48000);
+    audioBuffer.copyToChannel(float48, 0);
+    const source = ctx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.loop = true;
+    const gain = ctx.createGain();
+    gain.gain.value = 0;
+    source.connect(gain);
+    gain.connect(ctx.destination);
+    source.start();
+    return { ctx, source };
+  }
+
+  async function calibrateAmbient(analyser) {
+    try {
+      const calMs = Math.max(800, Math.min(4000, parseInt(urlParams.get('calMs') || '1500')));
+      await new Promise(r => setTimeout(r, 120));
+      const t0 = performance.now();
+      let sum = 0, n = 0, peak = 0, nonZero = 0;
+      const tmp = new Float32Array(analyser.fftSize);
+      while ((performance.now() - t0) < calMs) {
+        analyser.getFloatTimeDomainData(tmp);
+        let s = 0, p = 0;
+        for (let i = 0; i < tmp.length; i++) { const a = Math.abs(tmp[i]); s += a * a; if (a > p) p = a; }
+        const rms = Math.sqrt(s / Math.max(1, tmp.length));
+        if (rms > 1e-5) nonZero++;
+        sum += rms;
+        n += 1;
+        if (p > peak) peak = p;
+        await new Promise(r => setTimeout(r, 30));
+      }
+      const amb = (n && nonZero) ? (sum / n) : 0.003;
+      const tgt = Math.max(0.06, Math.min(0.18, amb * 4));
+      const gate = Math.max(0.001, Math.min(0.01, amb * 2));
+      state.targetRms = tgt;
+      state.gateRms = gate;
+      state.agcGain = 1;
+      log('calibrated', JSON.stringify({ ambientRms: Number(amb.toFixed(4)), targetRms: Number(tgt.toFixed(3)), gateRms: Number(gate.toFixed(3)) }));
+    } catch {}
+  }
+
+  function setupDiagnostics(ctx, analyser, stream) {
+    if (diag) {
+      try {
+        if (state.summaryTimer) clearInterval(state.summaryTimer);
+        state.summaryTimer = setInterval(() => {
+          try {
+            const nzPct = metrics.totalSamples ? Math.round((metrics.nzSamples / metrics.totalSamples) * 100) : 0;
+            const ingress = state.lastIngress || { chunks: 0, bytes: 0 };
+            const wsState = state.ws ? state.ws.readyState : -1;
+            const summary = {
+              t: new Date().toISOString(),
+              capture: (document.getElementById('captureMode') || { value: 'worklet' }).value || 'worklet',
+              send: sendMode,
+              ctx: ctx.state,
+              micActive: state.micActive,
+              deviceId: (state.deviceId || 'default'),
+              gain: state.softwareGain || 1,
+              nzPct,
+              lastPeak: Number((state.lastPeakRms?.peak || 0).toFixed(3)),
+              lastRms: Number((state.lastPeakRms?.rms || 0).toFixed(3)),
+              sentAppends: metrics.sentAppends,
+              sentBytes: metrics.sentBytesAudio,
+              ingressChunks: ingress.chunks,
+              ingressBytes: ingress.bytes,
+              ws: wsState,
+              events: state.eventCounts || {},
+              driftPpm: FF.drift_comp ? Number((state.driftPpm || 0).toFixed(1)) : undefined,
+              workletStalls: state.workletStalls || 0,
+              watchdogRecovers: state.watchdogRecovers || 0,
+              jitterMs: state.jitterMs || 0,
+            };
+            log('SUMMARY', JSON.stringify(summary));
+          } catch {}
+        }, 3000);
       } catch {}
-      // Periodic diagnostics summary (diag mode)
-      if (diag) {
-        try {
-          if (state.summaryTimer) clearInterval(state.summaryTimer);
-          state.summaryTimer = setInterval(() => {
-            try {
-              const nzPct = metrics.totalSamples ? Math.round((metrics.nzSamples/metrics.totalSamples)*100) : 0;
-              const ingress = state.lastIngress || { chunks: 0, bytes: 0 };
-              const wsState = state.ws ? state.ws.readyState : -1;
-              const summary = {
-                t: new Date().toISOString(),
-                capture: (document.getElementById('captureMode')||{value:'worklet'}).value || 'worklet',
-                send: sendMode,
-                ctx: ctx.state,
-                micActive: state.micActive,
-                deviceId: (state.deviceId||'default'),
-                gain: state.softwareGain || 1,
-                nzPct,
-                lastPeak: Number((state.lastPeakRms?.peak||0).toFixed(3)),
-                lastRms: Number((state.lastPeakRms?.rms||0).toFixed(3)),
+    }
+    if (diag) {
+      try {
+        if (state._diagTimer) clearInterval(state._diagTimer);
+        const interval = FF.sim_input ? 500 : 1000;
+        state._diagTimer = setInterval(() => {
+          try {
+            if (FF.sim_input) {
+              const payload = {
+                ts: Date.now(),
+                rttMs: typeof state.net?.rttMsEwma === 'number' ? Number(state.net.rttMsEwma.toFixed(1)) : null,
+                commitWinMs: commitWindowMs(),
                 sentAppends: metrics.sentAppends,
                 sentBytes: metrics.sentBytesAudio,
-                ingressChunks: ingress.chunks,
-                ingressBytes: ingress.bytes,
-                ws: wsState,
-                events: state.eventCounts||{},
+                ingressChunks: state.lastIngress?.chunks || 0,
+                ingressBytes: state.lastIngress?.bytes || 0,
+                driftPpm: typeof state.driftPpm === 'number' ? Number(state.driftPpm.toFixed(1)) : 0,
+                workletStalls: state.workletStalls || 0,
+                watchdogRecovers: state.watchdogRecovers || 0,
+                jitterMs: state.jitterMs || 0,
               };
-              log('SUMMARY', JSON.stringify(summary));
-            } catch {}
-          }, 3000);
-        } catch {}
-      }
-      if (diag) {
-        try {
-          if (state._diagTimer) clearInterval(state._diagTimer);
-          state._diagTimer = setInterval(() => {
-            try {
+              if (typeof window !== 'undefined') window.__qvtDiag = payload;
+              console.log(JSON.stringify(payload));
+            } else {
               const buf = new Float32Array(analyser.fftSize);
               analyser.getFloatTimeDomainData(buf);
-              let peak = 0, sum = 0, nz = 0; for (let i=0;i<buf.length;i++){ const a=Math.abs(buf[i]); peak=Math.max(peak,a); sum+=a*a; if (a>1e-4) nz++; }
+              let peak = 0, sum = 0, nz = 0;
+              for (let i = 0; i < buf.length; i++) { const a = Math.abs(buf[i]); peak = Math.max(peak, a); sum += a * a; if (a > 1e-4) nz++; }
               const rms = Math.sqrt(sum / Math.max(1, buf.length));
               const nzPct = Math.round((nz / buf.length) * 100);
               log('analyser', `peak=${peak.toFixed(3)} rms=${rms.toFixed(3)} nz=${nzPct}%`);
-            } catch {}
-          }, 1000);
-        } catch {}
-      }
-      // Mid-session ambient recalibration: every ~60s, sample ~500ms ambient and adjust gently
+            }
+          } catch {}
+        }, interval);
+      } catch {}
+    }
+    if (!FF.sim_input) {
       try {
         if (state.recalTimer) clearInterval(state.recalTimer);
         state.recalTimer = setInterval(async () => {
           try {
             const t0 = performance.now();
-            let sum=0, n=0;
+            let sum = 0, n = 0;
             const tmp = new Float32Array(analyser.fftSize);
-            while ((performance.now()-t0) < 500) {
+            while ((performance.now() - t0) < 500) {
               analyser.getFloatTimeDomainData(tmp);
-              let s=0; for (let i=0;i<tmp.length;i++){ const a=tmp[i]; s+=a*a; }
-              const rms = Math.sqrt(s/Math.max(1,tmp.length));
-              sum+=rms; n++; await new Promise(r=>setTimeout(r,30));
+              let s = 0;
+              for (let i = 0; i < tmp.length; i++) { const a = tmp[i]; s += a * a; }
+              const rms = Math.sqrt(s / Math.max(1, tmp.length));
+              sum += rms;
+              n++;
+              await new Promise(r => setTimeout(r, 30));
             }
-            const amb = n ? (sum/n) : 0.003;
-            const newGate = Math.max(0.001, Math.min(0.01, amb*2));
-            const newTgt  = Math.max(0.06, Math.min(0.18, amb*4));
+            const amb = n ? (sum / n) : 0.003;
+            const newGate = Math.max(0.001, Math.min(0.01, amb * 2));
+            const newTgt = Math.max(0.06, Math.min(0.18, amb * 4));
             state.gateRms = newGate;
-            state.targetRms = (state.targetRms*0.8) + (newTgt*0.2);
-            if (diag) log('ambient-recal', {amb: Number(amb.toFixed(4)), gate: Number(newGate.toFixed(3)), tgt: Number(state.targetRms.toFixed(3))});
+            state.targetRms = (state.targetRms * 0.8) + (newTgt * 0.2);
+            if (diag) log('ambient-recal', { amb: Number(amb.toFixed(4)), gate: Number(newGate.toFixed(3)), tgt: Number(state.targetRms.toFixed(3)) });
           } catch {}
         }, 60000);
       } catch {}
-      startVisualizer();
-      // Auto record+analyse in diag mode
-      if (diag) { try { await autoRecordAnalyse(stream, 5000); } catch (e) { log('autoRecord error', e.message||e); } }
-    } catch (e) {
-      log('Mic error', e.message || e);
     }
   }
+
+  async function startMic() {
+    if (!state.connected) return log('Not connected');
+    if (state.micActive) return;
+    try {
+      try { if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify({ type: 'input_audio_buffer.clear' })); } catch {}
+      state._seq = 0;
+      let ctx;
+      let source;
+      let stream = null;
+      let monitorOverride;
+      if (FF.sim_input) {
+        const sim = await buildSimulatedSource();
+        ctx = sim.ctx;
+        source = sim.source;
+        monitorOverride = false;
+        state.simSource = sim.source;
+      } else {
+        const constraints = buildConstraints();
+        try { log('getUserMedia constraints', JSON.stringify(constraints)); } catch {}
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+        ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+        source = ctx.createMediaStreamSource(stream);
+        monitorOverride = undefined;
+        state.simSource = null;
+      }
+      if (state.watchdogInterval) { clearInterval(state.watchdogInterval); state.watchdogInterval = null; }
+      state.workletStalls = 0;
+      state.watchdogRecovers = 0;
+      state.watchdogRecoveryAt = 0;
+      state.watchdogLastFrame = 0;
+      if (FF.watchdog && watchdogLib && typeof watchdogLib.CaptureWatchdog === 'function') {
+        try {
+          state.watchdogController = new watchdogLib.CaptureWatchdog();
+          state.watchdogController.reset(performance.now());
+        } catch {
+          state.watchdogController = null;
+        }
+      } else {
+        state.watchdogController = null;
+      }
+      if (FF.drift_comp) {
+        try { initDriftTracker(performance.now()); } catch { initDriftTracker(); }
+      } else {
+        teardownDriftTracker();
+      }
+      const { analyser, processor } = await configureCapture(ctx, source, { monitor: monitorOverride });
+      state.processor = processor;
+      state.audioContext = ctx;
+      state.mediaStream = stream;
+      state.analyser = analyser;
+      state.micActive = true;
+      $('btnMic').textContent = 'Stop Mic';
+      log('Mic started');
+      await calibrateAmbient(analyser);
+      setupDiagnostics(ctx, analyser, stream);
+      startVisualizer();
+      if (diag && stream && !FF.sim_input) {
+        try { await autoRecordAnalyse(stream, 5000); } catch (err) { log('autoRecord error', err.message || err); }
+      }
+    } catch (e) {
+      log('Mic error', e.message || e);
+      try { stopMic(); } catch {}
+    }
+  }
+
+
 
   function stopMic() {
     if (!state.micActive) return;
@@ -948,10 +1376,25 @@
       state.processor && state.processor.disconnect();
       state.audioContext && state.audioContext.close();
       state.mediaStream && state.mediaStream.getTracks().forEach(t => t.stop());
+      if (state.simSource) {
+        try { state.simSource.stop?.(); } catch {}
+        try { state.simSource.disconnect?.(); } catch {}
+        state.simSource = null;
+      }
+      if (state.firFilter && typeof state.firFilter.reset === 'function') {
+        try { state.firFilter.reset(); } catch {}
+      }
+      state.firFilter = null;
+      state._captureHandleFrame = null;
       if (state._diagTimer) { clearInterval(state._diagTimer); state._diagTimer = null; }
       if (state.summaryTimer) { clearInterval(state.summaryTimer); state.summaryTimer = null; }
       if (state.recalTimer) { clearInterval(state.recalTimer); state.recalTimer = null; }
+      if (state.watchdogInterval) { clearInterval(state.watchdogInterval); state.watchdogInterval = null; }
+      state.watchdogRecoveryAt = 0;
+      state.watchdogLastFrame = 0;
+      state.watchdogController = null;
     } catch {}
+    teardownDriftTracker();
     // Commit the audio buffer to trigger response
     try {
       if (state.ws && state.ws.readyState === 1) {

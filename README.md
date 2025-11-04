@@ -44,6 +44,19 @@ This repo includes a workflow that publishes the site on pushes to `main`.
   - `input_audio_buffer.commit` then `response.create` when mic stops.
   - Adjust `voice.js` to match your finalized on‑wire schema if needed.
 
+## Diagnostics Flags
+
+Append query parameters to enable feature flags and diagnostics during testing:
+
+- `ff=seq_json` – enable JSON+seq append path (pilot jitter buffer).
+- `ff=sim_input` – drive the client with a bundled 24 kHz PCM sample (no getUserMedia prompt). Useful for CI smoke tests.
+- `ff=fir_halfband` – run the capture path through the 47‑tap half-band FIR before decimating 48 kHz → 24 kHz.
+- `ff=drift_comp` – enable drift slewing (±50 ppm) that gently stretches/shrinks outgoing chunks to stay synchronized.
+- `ff=watchdog` – turn on the capture watchdog: auto-fails over to ScriptProcessor when the worklet stalls and retries recovery after 4 s (adds `workletStalls`/`watchdogRecovers` counters).
+- `diag=1` – enable diagnostic logs, including adaptive commit window telemetry. When `ff=sim_input` is present a compact JSON line is emitted every 500 ms with `{ commitWinMs, rttMs, sentAppends, ingressChunks, driftPpm, workletStalls, watchdogRecovers, jitterMs }`.
+
+Example: `https://app.asimo.io/?ff=seq_json,sim_input&diag=1`
+
 ## Theming
 
 Include `theme.css` variables and helper classes.
@@ -53,4 +66,3 @@ Include `theme.css` variables and helper classes.
 ```
 
 Variables: `--brand-accent`, `--brand-ink-strong`, `--bg`, `--fg`, `--link`, `--button-*`.
-

@@ -1,0 +1,5 @@
+version=dev-local
+commit=local
+short_sha=local
+generated_utc=manual
+repo=local
