@@ -17,7 +17,6 @@ test('Phase 2 simulated transport smoke', async ({ page }) => {
   page.on('console', (msg) => {
     const text = msg.text();
     if (msg.type() === 'error' || /response\.create\.ignored/i.test(text)) {
-      if (msg.type() === 'error' && text.includes('frame-ancestors')) return;
       consoleMessages.push(text);
     }
   });
@@ -57,6 +56,7 @@ test('Phase 2 simulated transport smoke', async ({ page }) => {
   }, { minCommit: negotiation.minCommitMs, maxCommit: negotiation.maxCommitMs, bounds: jitterBounds }, { timeout: 25_000 });
 
   const metrics = await page.evaluate(() => (window as any).__qvtMetrics);
+  expect(metrics).toBeTruthy();
   expect(metrics.commitWinMs).toBeGreaterThanOrEqual(negotiation.minCommitMs);
   expect(metrics.commitWinMs).toBeLessThanOrEqual(negotiation.maxCommitMs);
   expect(metrics.sentAppends).toBeGreaterThanOrEqual(6);

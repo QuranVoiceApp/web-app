@@ -9,7 +9,7 @@ DATE_UTC="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 SHORT_SHA="$(git rev-parse --short HEAD)"
 FULL_SHA="$(git rev-parse HEAD)"
 REPO_URL="$(git config --get remote.origin.url)"
-DEFAULT_TAG="r$(date -u +%Y.%m.%d)-p2"
+DEFAULT_TAG="r$(date -u +%Y.%m.%d)-p3"
 VERSION_TAG="${VERSION_TAG:-$DEFAULT_TAG}"
 FLAGS="${ACTIVE_FLAGS:-}"
 

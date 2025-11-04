@@ -41,8 +41,39 @@ jobs:
           name: phase2-unit-${{ github.run_id }}
           path: phase2-artifacts
 
-  build:
+  phase3-bargein:
     needs: phase2-unit
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: install dependencies
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: run barge-in smoke
+        env:
+          PHASE3_URL: https://app.asimo.io/?ff=seq_json,barge_in,sim_input&diag=1
+        run: npx playwright test tests/bargein.spec.ts --reporter=line,html --trace on
+      - name: bundle phase 3 artifacts
+        if: always()
+        env:
+          ACTIVE_FLAGS: "seq_json,barge_in,sim_input"
+        run: |
+          scripts/ci/collect_artifacts.sh phase3-artifacts playwright-report test-results
+      - name: upload phase 3 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase3-bargein-${{ github.run_id }}
+          path: phase3-artifacts
+
+  build:
+    needs: [phase2-unit, phase3-bargein]
     runs-on: ubuntu-latest
     steps:
       - name: checkout
@@ -50,7 +81,7 @@ jobs:
       - name: prepare artifact (static)
         run: |
           mkdir -p _site
-          rsync -a --exclude _site/ ./ _site/
+          cp -R * _site/
       - name: upload artifact
         uses: actions/upload-pages-artifact@v3
         with:

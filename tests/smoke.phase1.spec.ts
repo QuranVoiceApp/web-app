@@ -9,7 +9,7 @@ test('Phase 1 transport sanity', async ({ page }) => {
   page.on('console', (msg) => {
     if (msg.type() === 'error') {
       const text = msg.text();
-      if (text.includes("frame-ancestors")) return;
+      if (text.includes('frame-ancestors')) return;
       consoleErrors.push(text);
     }
   });
@@ -25,7 +25,7 @@ test('Phase 1 transport sanity', async ({ page }) => {
   await page.waitForFunction(() => {
     const session = (window as any).__qvtSession;
     return session && session.negotiation;
-  }, null, { timeout: 25_000 });
+  }, null, { timeout: 15_000 });
 
   const negotiation = await page.evaluate(() => (window as any).__qvtSession?.negotiation);
   expect(negotiation).toBeTruthy();
@@ -36,12 +36,16 @@ test('Phase 1 transport sanity', async ({ page }) => {
     const { minCommit, maxCommit } = data;
     const metrics = (window as any).__qvtMetrics;
     if (!metrics) return false;
+    if (metrics.sentAppends < 4) return false;
     if (typeof metrics.commitWinMs !== 'number') return false;
-    if (metrics.commitWinMs < minCommit || metrics.commitWinMs > maxCommit) return false;
-    return true;
+    return metrics.commitWinMs >= minCommit && metrics.commitWinMs <= maxCommit;
   }, { minCommit: negotiation.minCommitMs, maxCommit: negotiation.maxCommitMs }, { timeout: 20_000 });
 
   const metrics = await page.evaluate(() => (window as any).__qvtMetrics);
+  expect(metrics).toBeTruthy();
+  expect(typeof metrics.rttMs).toBe('number');
+  expect(metrics.commitWinMs).toBeGreaterThanOrEqual(negotiation.minCommitMs);
+  expect(metrics.commitWinMs).toBeLessThanOrEqual(negotiation.maxCommitMs);
   expect(metrics.sentAppends).toBeGreaterThanOrEqual(4);
   expect(metrics.recvAudioChunks).toBeGreaterThanOrEqual(0);
 

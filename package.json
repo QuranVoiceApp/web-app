@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "test:phase1": "playwright test --config=playwright.config.ts",
-    "test:phase2": "node tests/fir.spec.cjs && node tests/drift.spec.cjs && node tests/watchdog.spec.cjs && node tests/phase2.sim.cjs"
+    "test:phase2": "node tests/fir.spec.cjs && node tests/drift.spec.cjs && node tests/watchdog.spec.cjs && node tests/phase2.sim.cjs",
+    "test:phase3": "npx playwright test tests/bargein.spec.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.2"
