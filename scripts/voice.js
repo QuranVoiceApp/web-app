@@ -42,6 +42,12 @@
     meterText: null,
     clipEl: null,
     deviceId: null,
+    speakerId: null,
+    outputSupported: !!(HTMLMediaElement.prototype && HTMLMediaElement.prototype.setSinkId),
+    sinkDest: null,
+    sinkEl: null,
+    analyser: null,
+    visRaf: null,
   };
 
   const setConn = (ok) => {
@@ -67,6 +73,17 @@
         if (!state.playCtx) {
           state.playCtx = new (window.AudioContext || window.webkitAudioContext)();
           state.playCursor = state.playCtx.currentTime;
+        }
+        // Prepare output sink if supported
+        if (state.outputSupported) {
+          if (!state.sinkDest) state.sinkDest = new MediaStreamAudioDestinationNode(state.playCtx);
+          if (!state.sinkEl) {
+            const el = new Audio(); el.autoplay = true; el.muted = false; el.srcObject = state.sinkDest.stream;
+            state.sinkEl = el;
+          }
+          if (state.speakerId) {
+            state.sinkEl.setSinkId(state.speakerId).then(() => log('speaker set', state.speakerId)).catch(()=>{});
+          }
         }
         // Update session with desired voice and (best-effort) VAD threshold
         const threshold = parseFloat($('vadThresh').value || '0.7');
@@ -138,7 +155,8 @@
       buf.copyToChannel(f32, 0);
       const src = state.playCtx.createBufferSource();
       src.buffer = buf;
-      src.connect(state.playCtx.destination);
+      if (state.outputSupported && state.sinkDest) src.connect(state.sinkDest);
+      else src.connect(state.playCtx.destination);
       const when = Math.max(state.playCtx.currentTime + 0.01, state.playCursor);
       src.start(when);
       state.playCursor = when + buf.duration;
@@ -269,8 +287,9 @@
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
       const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser(); analyser.fftSize = 1024; analyser.smoothingTimeConstant = 0.85;
       const processor = ctx.createScriptProcessor(4096, 1, 1);
-      source.connect(processor); processor.connect(ctx.destination);
+      source.connect(analyser); source.connect(processor); processor.connect(ctx.destination);
       processor.onaudioprocess = (e) => {
         const input = e.inputBuffer.getChannelData(0);
         // Downsample to 24 kHz and send as base64 PCM16 JSON event
@@ -284,9 +303,10 @@
           } catch {}
         }
       };
-      state.mediaStream = stream; state.audioContext = ctx; state.processor = processor; state.micActive = true;
+      state.mediaStream = stream; state.audioContext = ctx; state.processor = processor; state.analyser = analyser; state.micActive = true;
       $('btnMic').textContent = 'Stop Mic';
       log('Mic started');
+      startVisualizer();
     } catch (e) {
       log('Mic error', e.message || e);
     }
@@ -312,6 +332,7 @@
     log('Mic stopped');
     // Reset meter display
     try { if (state.meterFill) state.meterFill.style.width = '0%'; if (state.meterText) state.meterText.textContent = 'level: 0%'; if (state.clipEl) state.clipEl.style.display='none'; } catch {}
+    stopVisualizer();
   }
 
   $('btnConnect').addEventListener('click', () => {
@@ -334,11 +355,15 @@
   if (saved.voice) $('voice').value = saved.voice;
   if (typeof saved.ptt === 'boolean') $('ptt').checked = saved.ptt;
   if (typeof saved.autoCommit === 'boolean') $('autoCommit').checked = saved.autoCommit;
+  if (saved.deviceId) state.deviceId = saved.deviceId;
+  if (saved.speakerId) state.speakerId = saved.speakerId;
   const persist = () => localStorage.setItem('qvt-settings', JSON.stringify({
     vad: $('vadThresh').value,
     voice: $('voice').value,
     ptt: $('ptt').checked,
     autoCommit: $('autoCommit').checked,
+    deviceId: state.deviceId,
+    speakerId: state.speakerId,
   }));
   $('vadThresh').addEventListener('change', persist);
   $('voice').addEventListener('change', persist);
@@ -391,6 +416,32 @@
     }
   }
 
+  async function enumerateAudioOutputs() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const outputs = devices.filter(d => d.kind === 'audiooutput');
+      const sel = $('speaker'); if (!sel) return;
+      const prev = sel.value;
+      sel.innerHTML = '';
+      outputs.forEach(d => {
+        const opt = document.createElement('option');
+        opt.value = d.deviceId; opt.textContent = d.label || `Speaker (${d.deviceId.slice(0,6)}…)`;
+        sel.appendChild(opt);
+      });
+      const savedDev = saved.speakerId;
+      if (savedDev && outputs.some(d => d.deviceId === savedDev)) sel.value = savedDev;
+      else if (prev && outputs.some(d => d.deviceId === prev)) sel.value = prev;
+      state.speakerId = sel.value || null;
+      $('speakerInfo').textContent = state.outputSupported ? (outputs.length ? `${outputs.length} output(s)` : 'No outputs found') : 'Output selection not supported in this browser';
+      // Apply sink if possible
+      if (state.outputSupported && state.sinkEl && state.speakerId) {
+        try { await state.sinkEl.setSinkId(state.speakerId); } catch {}
+      }
+    } catch (e) {
+      $('speakerInfo').textContent = `outputs error: ${e.message || e}`;
+    }
+  }
+
   async function initDevices() {
     try {
       // Some browsers need a permission grant before labels are available
@@ -398,6 +449,7 @@
       test.getTracks().forEach(t => t.stop());
     } catch {}
     await enumerateAudioInputs();
+    await enumerateAudioOutputs();
   }
 
   $('btnRefreshDevs').addEventListener('click', () => enumerateAudioInputs());
@@ -406,8 +458,15 @@
     persist();
     if (state.micActive) { stopMic(); startMic(); }
   });
+  $('speaker').addEventListener('change', async () => {
+    state.speakerId = $('speaker').value || null;
+    persist();
+    if (state.outputSupported && state.sinkEl && state.speakerId) {
+      try { await state.sinkEl.setSinkId(state.speakerId); log('speaker set', state.speakerId); } catch (e) { log('speaker set error', e.message || e); }
+    }
+  });
   if (navigator.mediaDevices && 'ondevicechange' in navigator.mediaDevices) {
-    navigator.mediaDevices.ondevicechange = () => enumerateAudioInputs();
+    navigator.mediaDevices.ondevicechange = () => { enumerateAudioInputs(); enumerateAudioOutputs(); };
   }
 
   // Push‑to‑talk (hold Space)
@@ -427,6 +486,85 @@
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
       e.preventDefault();
       if (state.micActive) stopMic();
+    }
+  });
+
+  // Visualizer (waveform + spectrum)
+  function startVisualizer() {
+    const wf = $('waveform'); const sp = $('spectrum');
+    if (!wf || !sp || !state.analyser) return;
+    const wfc = wf.getContext('2d'); const spc = sp.getContext('2d');
+    const timeData = new Uint8Array(state.analyser.fftSize);
+    const freqData = new Uint8Array(state.analyser.frequencyBinCount);
+    const draw = () => {
+      state.analyser.getByteTimeDomainData(timeData);
+      state.analyser.getByteFrequencyData(freqData);
+      // Waveform
+      wfc.clearRect(0,0,wf.width,wf.height);
+      wfc.strokeStyle = '#28fe14'; wfc.lineWidth = 2; wfc.beginPath();
+      for (let i=0;i<timeData.length;i++) {
+        const x = i / (timeData.length-1) * wf.width;
+        const y = (timeData[i] / 255) * wf.height;
+        if (i===0) wfc.moveTo(x,y); else wfc.lineTo(x,y);
+      }
+      wfc.stroke();
+      // Spectrum (bars)
+      spc.clearRect(0,0,sp.width,sp.height);
+      const bars = 96; const step = Math.floor(freqData.length / bars);
+      for (let i=0;i<bars;i++) {
+        const v = freqData[i*step] / 255; const h = v * sp.height;
+        spc.fillStyle = v > 0.75 ? '#ff5252' : v > 0.5 ? '#ffc107' : '#28fe14';
+        const x = i * (sp.width / bars);
+        spc.fillRect(x, sp.height - h, (sp.width / bars) - 2, h);
+      }
+      state.visRaf = requestAnimationFrame(draw);
+    };
+    if (state.visRaf) cancelAnimationFrame(state.visRaf);
+    state.visRaf = requestAnimationFrame(draw);
+  }
+  function stopVisualizer() { if (state.visRaf) cancelAnimationFrame(state.visRaf); state.visRaf = null; }
+
+  // Mic calibration: estimate noise floor and set VAD threshold
+  $('btnCalibrate').addEventListener('click', async () => {
+    try {
+      let rmsSum = 0, peak = 0, frames = 0;
+      const durMs = 1500;
+      const startTs = performance.now();
+      const constraints = { audio: { echoCancellation: true, noiseSuppression: true }, video: false };
+      if (state.deviceId) constraints.audio.deviceId = { exact: state.deviceId };
+      const stream = state.micActive ? state.mediaStream : await navigator.mediaDevices.getUserMedia(constraints);
+      const ctx = state.micActive ? state.audioContext : new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+      const source = ctx.createMediaStreamSource(stream);
+      const proc = ctx.createScriptProcessor(2048, 1, 1);
+      source.connect(proc); proc.connect(ctx.destination);
+      const finish = async () => {
+        try { proc.disconnect(); } catch {}
+        if (!state.micActive) {
+          try { ctx.close(); } catch {}
+          try { stream.getTracks().forEach(t=>t.stop()); } catch {}
+        }
+      };
+      await new Promise((resolve) => {
+        proc.onaudioprocess = (e) => {
+          const input = e.inputBuffer.getChannelData(0);
+          let p=0, s=0; for (let i=0;i<input.length;i++){ const a=Math.abs(input[i]); p=Math.max(p,a); s+=a*a; }
+          const rms = Math.sqrt(s / Math.max(1,input.length));
+          peak = Math.max(peak, p); rmsSum += rms; frames++;
+          if (performance.now() - startTs > durMs) resolve();
+        };
+      });
+      await finish();
+      const rmsAvg = rmsSum / Math.max(1, frames);
+      // Heuristic mapping to VAD threshold [0.25..0.9]
+      let thr = Math.max(0.25, Math.min(0.9, (rmsAvg * 6) + (peak * 1.5)));
+      thr = Math.round(thr * 100) / 100;
+      $('vadThresh').value = String(thr);
+      persist();
+      log('calibrate', `rms=${rmsAvg.toFixed(3)} peak=${peak.toFixed(3)} => vad=${thr}`);
+      // Send live update
+      sendSessionUpdate();
+    } catch (e) {
+      log('calibrate error', e.message || e);
     }
   });
 })();
