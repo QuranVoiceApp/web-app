@@ -342,7 +342,9 @@
           const node = new AudioWorkletNode(ctx, 'pcm-capture');
           source.connect(analyser); source.connect(node); node.connect(ctx.destination);
           node.port.onmessage = (ev) => {
-            const input = ev.data && ev.data.data; if (!input) return; handleFrame(input);
+            try {
+              const input = ev.data && ev.data.data; if (!input) return; handleFrame(input);
+            } catch (e) { log('worklet onmessage error', e.message || e); }
           };
           processor = node;
           log('capture', 'worklet attached');
@@ -353,11 +355,13 @@
       if (captureMode === 'script') {
         const sp = ctx.createScriptProcessor(4096, 1, 1);
         source.connect(analyser); source.connect(sp); sp.connect(ctx.destination);
-        sp.onaudioprocess = (e) => { const input = e.inputBuffer.getChannelData(0); handleFrame(input); };
+        sp.onaudioprocess = (e) => {
+          try { const input = e.inputBuffer.getChannelData(0); handleFrame(input); }
+          catch (err) { log('script onaudioprocess error', err.message || err); }
+        };
         processor = sp; log('capture', 'script processor attached');
       }
       async function handleFrame(input) {
-        const input = e.inputBuffer.getChannelData(0);
         // Downsample to 24 kHz
         const ds = downsample48kTo24k(input);
         const pcmBuf = float32ToPCM16(ds);
