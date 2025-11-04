@@ -53,7 +53,7 @@ Append query parameters to enable feature flags and diagnostics during testing:
 - `ff=fir_halfband` – run the capture path through the 47‑tap half-band FIR before decimating 48 kHz → 24 kHz.
 - `ff=drift_comp` – enable drift slewing (±50 ppm) that gently stretches/shrinks outgoing chunks to stay synchronized.
 - `ff=watchdog` – turn on the capture watchdog: auto-fails over to ScriptProcessor when the worklet stalls and retries recovery after 4 s (adds `workletStalls`/`watchdogRecovers` counters).
-- `diag=1` – enable diagnostic logs, including adaptive commit window telemetry. When `ff=sim_input` is present a compact JSON line is emitted every 500 ms with `{ commitWinMs, rttMs, sentAppends, ingressChunks, driftPpm, workletStalls, watchdogRecovers }`.
+- `diag=1` – enable diagnostic logs, including adaptive commit window telemetry. When `ff=sim_input` is present a compact JSON line is emitted every 500 ms with `{ commitWinMs, rttMs, sentAppends, ingressChunks, driftPpm, workletStalls, watchdogRecovers, jitterMs }`.
 
 Example: `https://app.asimo.io/?ff=seq_json,sim_input&diag=1`
 

@@ -31,6 +31,43 @@
       wake_lock: !set.has('no_wake_lock'),
     };
   })();
+  try { window.__qvtFlagTokens = ffTokens.slice(); } catch {}
+  const activeFlags = ffTokens.join(',') || 'none';
+
+  const emitVersionBanner = () => {
+    const fallback = `QVT web dev (${new Date().toISOString().slice(0, 10)})`;
+    const logBanner = (msg, meta = {}) => {
+      try { window.__qvtBuild = Object.assign({ flags: activeFlags }, meta); } catch {}
+      console.log(`[qvt] ${msg} flags=${activeFlags}`);
+    };
+    try {
+      fetch('./BUILDINFO.txt?v=' + Date.now())
+        .then((res) => (res.ok ? res.text() : null))
+        .then((text) => {
+          if (!text) {
+            logBanner(fallback);
+            return;
+          }
+          const info = {};
+          text.split(/\r?\n/).forEach((line) => {
+            const idx = line.indexOf('=');
+            if (idx > 0) {
+              const key = line.slice(0, idx).trim();
+              const value = line.slice(idx + 1).trim();
+              if (key) info[key] = value;
+            }
+          });
+          const version = info.version || fallback;
+          logBanner(`${version} ${info.short_sha || ''}`.trim(), info);
+        })
+        .catch(() => logBanner(fallback));
+    } catch {
+      logBanner(fallback);
+    }
+  };
+
+  emitVersionBanner();
+  log('flags', activeFlags || 'none');
   const uaStr = (navigator.userAgent || '').toLowerCase();
   const isIOS = /iphone|ipad|ipod/.test(uaStr);
   const isSafari = uaStr.includes('safari') && !uaStr.includes('chrome');
@@ -95,7 +132,8 @@
     const rttDisplay = Math.round(state.net.rttMsEwma || 0);
     const winDisplay = commitWindowMs();
     const driftDisplay = (FF.drift_comp && typeof state.driftPpm === 'number') ? ` · drift=${Math.round(state.driftPpm)}ppm` : '';
-    m.textContent = `sentAppends=${metrics.sentAppends} sentBytesAudio=${metrics.sentBytesAudio}B · recvAudioChunks=${metrics.recvAudioChunks} recvAudioBytes=${metrics.recvAudioBytes}B · transcriptChars=${metrics.recvTranscriptChars} · nz=${nzPct}% · rtt=${rttDisplay}ms · commitWin=${winDisplay}ms${driftDisplay}`;
+    const jitterDisplay = state.jitterMs ? ` · jitter=${Math.round(state.jitterMs)}ms` : '';
+    m.textContent = `sentAppends=${metrics.sentAppends} sentBytesAudio=${metrics.sentBytesAudio}B · recvAudioChunks=${metrics.recvAudioChunks} recvAudioBytes=${metrics.recvAudioBytes}B · transcriptChars=${metrics.recvTranscriptChars} · nz=${nzPct}% · rtt=${rttDisplay}ms · commitWin=${winDisplay}ms${driftDisplay}${jitterDisplay}`;
     try {
       if (typeof window !== 'undefined') {
         window.__qvtMetrics = {
@@ -106,6 +144,7 @@
           rttMs: rttDisplay,
           commitWinMs: winDisplay,
           driftPpm: state.driftPpm || 0,
+          jitterMs: state.jitterMs || 0,
         };
       }
     } catch {}
@@ -177,6 +216,7 @@
     watchdogRecoveryAt: 0,
     watchdogActiveMode: null,
     watchdogController: null,
+    jitterMs: 0,
   };
 
   const ewma = (prev, value, alpha = 0.2) => (prev == null ? value : (alpha * value) + ((1 - alpha) * prev));
@@ -692,6 +732,10 @@
       const filtered = firFilter ? firFilter.process(input) : input;
       const ds = downsample48kTo24k(filtered);
       try {
+        const jitterEstimate = Math.max(40, Math.min(120, commitWindowMs() - 40));
+        state.jitterMs = Math.round(jitterEstimate);
+      } catch {}
+      try {
         let nz = 0;
         for (let i = 0; i < ds.length; i++) if (Math.abs(ds[i]) > 1e-4) nz++;
         metrics.nzSamples += nz;
@@ -1188,6 +1232,7 @@
               driftPpm: FF.drift_comp ? Number((state.driftPpm || 0).toFixed(1)) : undefined,
               workletStalls: state.workletStalls || 0,
               watchdogRecovers: state.watchdogRecovers || 0,
+              jitterMs: state.jitterMs || 0,
             };
             log('SUMMARY', JSON.stringify(summary));
           } catch {}
@@ -1212,6 +1257,7 @@
                 driftPpm: typeof state.driftPpm === 'number' ? Number(state.driftPpm.toFixed(1)) : 0,
                 workletStalls: state.workletStalls || 0,
                 watchdogRecovers: state.watchdogRecovers || 0,
+                jitterMs: state.jitterMs || 0,
               };
               if (typeof window !== 'undefined') window.__qvtDiag = payload;
               console.log(JSON.stringify(payload));

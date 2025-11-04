@@ -28,12 +28,18 @@ jobs:
         run: |
           set -o pipefail
           npm run test:phase2 | tee phase2-unit.log
-      - name: upload phase 2 unit log
+      - name: bundle phase 2 artifacts
+        if: always()
+        env:
+          ACTIVE_FLAGS: "seq_json,fir_halfband,drift_comp,watchdog"
+        run: |
+          scripts/ci/collect_artifacts.sh phase2-artifacts phase2-unit.log
+      - name: upload phase 2 unit artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: phase2-unit-${{ github.run_id }}
-          path: phase2-unit.log
+          path: phase2-artifacts
 
   build:
     needs: phase2-unit
