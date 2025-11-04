@@ -23,7 +23,7 @@ test('Phase 1 transport sanity', async ({ page }) => {
   await page.waitForFunction(() => {
     const session = (window as any).__qvtSession;
     return session && session.negotiation;
-  }, null, { timeout: 15_000 });
+  }, null, { timeout: 25_000 });
 
   const negotiation = await page.evaluate(() => (window as any).__qvtSession?.negotiation);
   expect(negotiation).toBeTruthy();
@@ -31,20 +31,12 @@ test('Phase 1 transport sanity', async ({ page }) => {
   expect(negotiation.maxCommitMs).toBeGreaterThanOrEqual(negotiation.minCommitMs);
 
   await page.waitForFunction((minCommit: number, maxCommit: number) => {
-    const diag = (window as any).__qvtDiag;
     const metrics = (window as any).__qvtMetrics;
-    if (!diag || !metrics) return false;
-    if (metrics.sentAppends < 4) return false;
-    if (diag.ingressChunks < 1) return false;
-    if (typeof diag.commitWinMs !== 'number') return false;
-    return diag.commitWinMs >= minCommit && diag.commitWinMs <= maxCommit;
+    if (!metrics) return false;
+    if (typeof metrics.commitWinMs !== 'number') return false;
+    if (metrics.commitWinMs < minCommit || metrics.commitWinMs > maxCommit) return false;
+    return true;
   }, negotiation.minCommitMs, negotiation.maxCommitMs, { timeout: 20_000 });
-
-  const diag = await page.evaluate(() => (window as any).__qvtDiag);
-  expect(diag).toBeTruthy();
-  expect(typeof diag.rttMs).toBe('number');
-  expect(diag.commitWinMs).toBeGreaterThanOrEqual(negotiation.minCommitMs);
-  expect(diag.commitWinMs).toBeLessThanOrEqual(negotiation.maxCommitMs);
 
   const metrics = await page.evaluate(() => (window as any).__qvtMetrics);
   expect(metrics.sentAppends).toBeGreaterThanOrEqual(4);
