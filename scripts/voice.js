@@ -22,6 +22,11 @@
   const urlDeviceLabel = urlParams.get('deviceLabel') || urlParams.get('device') || '';
   const urlGain = parseFloat(urlParams.get('gain') || '1');
   const softwareGain = isFinite(urlGain) && urlGain > 0 ? urlGain : 1;
+  const agcParam = (urlParams.get('agc') || '1').toLowerCase();
+  const agcEnabledDefault = !(agcParam === '0' || agcParam === 'false' || agcParam === 'off');
+  const targetRms = Math.max(0.01, parseFloat(urlParams.get('targetRms') || '0.12'));
+  const agcRate = Math.max(0.001, parseFloat(urlParams.get('agcRate') || '0.02')); // adaptation per chunk
+  const limiterThr = Math.min(0.999, Math.max(0.5, parseFloat(urlParams.get('lim') || '0.9')));
   log('sendMode', sendMode);
   if (diag) log('diag', 'on');
   if (diag && softwareGain !== 1) log('gain', String(softwareGain));
@@ -65,6 +70,8 @@
     visRaf: null,
     autoStartMic: true,
     softwareGain,
+    agcEnabled: agcEnabledDefault,
+    agcGain: 1,
   };
 
   const setConn = (ok) => {
@@ -340,6 +347,7 @@
       if (state.meterFill) state.meterFill.style.width = pct + '%';
       if (state.meterText) state.meterText.textContent = `level: ${pct}% (rms ${rms.toFixed(2)})`;
       if (state.clipEl) state.clipEl.style.display = (clipped || peak > 0.98) ? '' : 'none';
+      state.lastPeakRms = { peak, rms };
       // Silence detector (pre-downsample). If sustained silence, show warning.
       const warn = $('silenceWarn');
       if (rms < 0.005 && peak < 0.01) { metrics.silenceFrames++; }
@@ -400,21 +408,13 @@
       // Ring buffer for ~20 ms framing at server sample rate (default 24 kHz)
       let carry = new Float32Array(0);
       const batchMs = Math.max(5, Math.min(100, parseFloat(urlParams.get('batchMs') || '20')));
-      const gateRms = Math.max(0, parseFloat(urlParams.get('gate') || '0')); // 0 disables gate
+      const gateRms = Math.max(0, parseFloat(urlParams.get('gate') || '0.002')); // low default gate (~-54 dB)
       const MAX_BUFFERED = 512 * 1024; // backpressure threshold
 
       async function handleFrame(input) {
         // Downsample to 24 kHz
         const ds = downsample48kTo24k(input);
-        // Software gain (if set via ?gain=)
-        if (state.softwareGain && state.softwareGain !== 1) {
-          const g = state.softwareGain;
-          for (let i = 0; i < ds.length; i++) {
-            let v = ds[i] * g;
-            if (v > 1) v = 1; else if (v < -1) v = -1;
-            ds[i] = v;
-          }
-        }
+        // Do not apply gain yet; apply per-chunk so AGC can use chunk RMS
         // Accumulate into carry
         let combined;
         if (!carry.length) {
@@ -448,6 +448,36 @@
             const rms = Math.sqrt(sum / Math.max(1, view.length));
             if (rms < gateRms) continue; // drop very quiet chunk
           }
+          // Adaptive gain and soft limiter
+          try {
+            // Measure chunk RMS pre-gain
+            let sum = 0; for (let i=0;i<view.length;i++){ const s=view[i]; sum += s*s; }
+            const rms = Math.sqrt(sum / Math.max(1, view.length));
+            if (state.agcEnabled) {
+              const eps = 1e-6;
+              const desired = targetRms / Math.max(rms, eps);
+              // Smooth adaptation to avoid pumping
+              state.agcGain = Math.max(0.1, Math.min(10, state.agcGain * (1 - agcRate) + desired * agcRate));
+            }
+            const gEff = (state.softwareGain || 1) * (state.agcEnabled ? state.agcGain : 1);
+            // Apply gain and limiter in-place
+            for (let i=0;i<view.length;i++) {
+              let v = view[i] * gEff;
+              // Soft limiter with knee near limiterThr
+              const a = Math.abs(v);
+              if (a > limiterThr) {
+                const sign = v < 0 ? -1 : 1;
+                const excess = a - limiterThr;
+                const knee = 1 - limiterThr;
+                // Map excess smoothly into remaining headroom using tanh curve
+                const comp = Math.tanh((excess / Math.max(1e-6, knee)) * 2.0) * knee;
+                v = sign * (limiterThr + comp);
+              }
+              // Final clamp to [-1,1]
+              if (v > 1) v = 1; else if (v < -1) v = -1;
+              view[i] = v;
+            }
+          } catch {}
 
           const pcmBuf = float32ToPCM16(view);
 
