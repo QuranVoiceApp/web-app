@@ -524,9 +524,10 @@
           const monitor = (document.getElementById('monitor')||{}).checked;
           sink.gain.value = monitor ? 1 : 0;
           node.connect(sink); sink.connect(ctx.destination);
+          state.framesSeen = 0;
           node.port.onmessage = (ev) => {
             try {
-              const input = ev.data && ev.data.data; if (!input) return; handleFrame(input);
+              const input = ev.data && ev.data.data; if (!input) return; state.framesSeen = (state.framesSeen||0)+1; handleFrame(input);
             } catch (e) { log('worklet onmessage error', e.message || e); }
           };
           processor = node;
@@ -734,6 +735,23 @@
       state.mediaStream = stream; state.audioContext = ctx; /* state.processor set above */ state.analyser = analyser; state.micActive = true;
       $('btnMic').textContent = 'Stop Mic';
       log('Mic started');
+      // Safari/iOS fallback: if no frames seen shortly after starting, fallback to ScriptProcessor
+      try {
+        setTimeout(() => {
+          try {
+            if (!state.micActive) return;
+            if ((state.framesSeen||0) === 0) {
+              log('fallback', 'no worklet frames; switching to script');
+              try { processor && processor.disconnect(); } catch {}
+              const sp = ctx.createScriptProcessor(4096, 1, 1);
+              source.connect(sp);
+              const sink2 = ctx.createGain(); sink2.gain.value = 0; sp.connect(sink2); sink2.connect(ctx.destination);
+              sp.onaudioprocess = (e) => { try { const input = e.inputBuffer.getChannelData(0); handleFrame(input); } catch (err) { log('script onaudioprocess error', err.message||err); } };
+              state.processor = sp;
+            }
+          } catch {}
+        }, 600);
+      } catch {}
       // Ambient calibration (no UI): ~1.5s quick pass to set targetRms and gateRms based on environment (with warm-up)
       try {
         const calMs = Math.max(800, Math.min(4000, parseInt(urlParams.get('calMs')||'1500')));
