@@ -3,8 +3,6 @@ name: Deploy Web App (GitHub Pages)
 on:
   push:
     branches: [ main ]
-    paths:
-      - 'web-app/**'
   workflow_dispatch:
 
 permissions:
@@ -20,12 +18,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Prepare artifact (static)
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: prepare artifact (static)
         run: |
           mkdir -p _site
-          cp -R web-app/* _site/
-      - name: Upload artifact
+          cp -R * _site/
+      - name: upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: _site
@@ -38,4 +37,3 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
-

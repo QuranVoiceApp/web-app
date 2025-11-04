@@ -1,63 +1,56 @@
-# Joplin Web App
+# Quran Voice Tutor – Web App
 
-This repository deploys the Joplin web client to https://app.joplincloud.com/ with GitHub pages.
+Static, fast, voice‑first UI for the Quran Voice Tutor backend (OpenAI Realtime proxy). Deployed via GitHub Pages with a custom domain.
 
-The web app source code can be found in [the main Joplin repository](https://github.com/laurent22/joplin).
+- Live: https://app.asimo.io
+- Backend WS: set in `scripts/env.js` (default `wss://quran.asimo.io/realtime/v1/ws`).
 
+## Features
 
-## FAQ
+- Minimal, low‑latency voice test page (connect + mic + VAD threshold).
+- PCM16/16kHz mic streaming over WebSocket; commit + response.create on stop.
+- Clean brand theme (`theme.css`).
+- PWA basics: `manifest.webmanifest`, offline cache via `sw.js`.
+- CSP locked down to your backend WS.
 
-### What is it?
+## Development
 
-Joplin Web is Joplin Mobile, running in a web browser.
+No build step is required.
 
-### Where is my data stored?
+- Serve locally:
+  - `cd web-app && python3 -m http.server 8080`
+  - Visit http://localhost:8080
+- Configure backend endpoint:
+  - Edit `scripts/env.js`, set `WS_URL` to your FastAPI Realtime proxy.
 
-Like Joplin Mobile, Joplin Web is local-first. Notes and attachments are stored locally on your computer, but can optionally be synced with one of the supported sync targets. As a result, Joplin Web can be used offline.
+## Deploy (GitHub Pages)
 
-### Theme palette
+This repo includes a workflow that publishes the site on pushes to `main`.
 
-Include `theme.css` to use the shared brand palette and CSS variables.
+- Custom domain: `CNAME` is set to `app.asimo.io`.
+- Action: `.github/workflows/deploy-github-pages.yml` uploads the static root.
+- After the first successful run, Pages serves https://app.asimo.io.
 
-Example (static HTML):
+## Security
+
+- CSP (in `index.html`) restricts `connect-src` to `wss://quran.asimo.io`.
+- Service worker caches only same‑origin static assets.
+- Avoid embedding secrets in the client; keep keys on the backend proxy.
+
+## Backend Requirements
+
+- Allow origin `https://app.asimo.io` in CORS/WS origin checks on your FastAPI service.
+- WS schema: this client streams raw PCM16 (16kHz, mono). It sends:
+  - `input_audio_buffer.commit` then `response.create` when mic stops.
+  - Adjust `voice.js` to match your finalized on‑wire schema if needed.
+
+## Theming
+
+Include `theme.css` variables and helper classes.
 
 ```
 <link rel="stylesheet" href="./theme.css" />
 ```
 
-Available variables:
-
-- `--brand-accent`: #28FE14
-- `--brand-ink-strong`: #000000
-- `--bg` / `--fg` / `--link` / `--button-*` (optional roles)
-
-Helper classes: `.brand-accent`, `.brand-ink-strong`, `.btn-brand`.
-
-### What browsers does it support?
-
-The Joplin web app works best in recent versions of Chrome and Safari. It can also be used in Firefox, however, it may take a very long time to start.
-
-Some features are available only on certain platforms:
-- File system sync[^1] (as of July 2024):
-	- ✅ Chrome (desktop)
-	- ❌ Chrome (Android)
-	- ❌ Safari
-	- ❌ Firefox
-- Share note content[^2] (as of July 2024):
-	- ✅ Safari
-	- ✅ Chrome (Android)
-	- ❌ Chrome (Desktop)
-	- ❌ Firefox
-- Insert images from a camera (as of July 2024):
-	- ✅ Safari
-	- ✅ Chrome (Android)
-	- ❌ Chrome (Desktop)
-	- ❌ Firefox
-- Drop images and files from another app (as of July 2024):
-	- ✅ Chrome (Desktop), Safari, Firefox (Desktop)
-	- ❌ Chrome (Android)
-
-
-[^1]: Requires [support for showDirectoryPicker](https://caniuse.com/?search=showDirectoryPicker).
-[^2]: Requires [Web Share API support](https://caniuse.com/?search=web%20share%20api).
+Variables: `--brand-accent`, `--brand-ink-strong`, `--bg`, `--fg`, `--link`, `--button-*`.
 
