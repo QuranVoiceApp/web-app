@@ -98,6 +98,7 @@
     agcGain: 1,
     targetRms: defaultTargetRms,
     gateRms: null, // dynamically set after ambient calibration
+    stragglerTimer: null,
   };
 
   const setConn = (ok) => {
@@ -586,6 +587,17 @@
           sentAny = true;
           // Arm quick inactivity-based commit after each send; server VAD will still drive create_response if enabled
           armInactivityCommit();
+          // Straggler flush: if no more audio arrives very soon, commit to avoid turn delay
+          try { if (state.stragglerTimer) clearTimeout(state.stragglerTimer); } catch {}
+          state.stragglerTimer = setTimeout(() => {
+            try {
+              if (state.ws && state.ws.readyState === 1) {
+                state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+                state.ws.send(JSON.stringify({ type: 'response.create' }));
+                log('auto-commit (straggler flush)');
+              }
+            } catch {}
+          }, 30);
         }
         // Preserve leftover samples for next frame
         carry = (offset < combined.length) ? combined.subarray(offset).slice(0) : new Float32Array(0);
