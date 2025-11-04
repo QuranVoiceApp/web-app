@@ -225,6 +225,8 @@
     if (!state.connected) return log('Not connected');
     if (state.micActive) return;
     try {
+      // Clear any residual buffered audio on server
+      try { if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify({ type: 'input_audio_buffer.clear' })); } catch {}
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
       const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
       const source = ctx.createMediaStreamSource(stream);
