@@ -103,7 +103,10 @@
             turn_detection: { type: 'server_vad', threshold },
           }
         };
-        try { ws.send(JSON.stringify(sessionUpdate)); } catch {}
+        try {
+          ws.send(JSON.stringify(sessionUpdate));
+          try { log('=> session.update keys', Object.keys(sessionUpdate.session).join(',')); } catch {}
+        } catch {}
 
         // Prepare/select devices after connection
         initDevices();
@@ -300,6 +303,7 @@
       try { if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify({ type: 'input_audio_buffer.clear' })); } catch {}
       const constraints = { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false };
       if (state.deviceId) constraints.audio.deviceId = { exact: state.deviceId };
+      try { log('getUserMedia constraints', JSON.stringify(constraints)); } catch {}
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
       const source = ctx.createMediaStreamSource(stream);
