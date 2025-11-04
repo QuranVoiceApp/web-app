@@ -44,9 +44,20 @@
           <button id="btnMic" disabled>Start Mic</button>
           <label>VAD Threshold <input id="vadThresh" type="number" min="0" max="1" step="0.05" value="0.7"/></label>
           <label>Voice <select id="voice"><option value="alloy">alloy</option></select></label>
+          <button id="btnClear" title="Clear transcript and logs">Clear</button>
         </div>
         <p class="muted">Backend WS: <code id="wsUrl"></code></p>
-        <textarea id="log" readonly placeholder="Logs...\n"></textarea>
+        <div class="row">
+          <div style="flex:1;min-width:260px">
+            <h4 style="margin:8px 0">Transcript</h4>
+            <pre id="transcript" style="background:#0f0f0f;border:1px solid #1f1f1f;border-radius:8px;padding:12px;min-height:100px;white-space:pre-wrap"></pre>
+          </div>
+          <div style="flex:1;min-width:260px">
+            <h4 style="margin:8px 0">Logs</h4>
+            <textarea id="log" readonly placeholder="Logs...\n"></textarea>
+          </div>
+        </div>
+        <div class="muted" id="metrics" style="margin-top:8px"></div>
       </section>
 
       <section style="margin-top:16px" class="card">
