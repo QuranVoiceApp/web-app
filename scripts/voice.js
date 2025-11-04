@@ -14,6 +14,9 @@
 
   const wsUrl = (window.Env && window.Env.WS_URL) || 'wss://quran.asimo.io/realtime/v1/ws';
   $('wsUrl').textContent = wsUrl;
+  const urlParams = new URLSearchParams(location.search);
+  const sendMode = (urlParams.get('send') || 'json').toLowerCase(); // 'json' (default) or 'binary'
+  log('sendMode', sendMode);
 
   const metrics = {
     sentBytesAudio: 0,
@@ -284,6 +287,13 @@
     return outBuf;
   }
 
+  function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+
   async function startMic() {
     if (!state.connected) return log('Not connected');
     if (state.micActive) return;
@@ -300,17 +310,23 @@
       source.connect(analyser); source.connect(processor); processor.connect(ctx.destination);
       processor.onaudioprocess = (e) => {
         const input = e.inputBuffer.getChannelData(0);
-        // Downsample to 24 kHz and send as raw PCM16 binary frames
+        // Downsample to 24 kHz
         const ds = downsample48kTo24k(input);
         const pcmBuf = float32ToPCM16(ds);
         if (state.ws && state.ws.readyState === 1) {
           try {
-            state.ws.send(pcmBuf);
+            if (sendMode === 'binary') {
+              state.ws.send(pcmBuf);
+            } else {
+              const b64 = arrayBufferToBase64(pcmBuf);
+              const evt = { type: 'input_audio_buffer.append', audio: b64 };
+              state.ws.send(JSON.stringify(evt));
+            }
             metrics.sentAppends += 1; metrics.sentBytesAudio += pcmBuf.byteLength; renderMetrics();
             if (metrics.sentAppends <= 3 || metrics.sentAppends % 50 === 0) {
               const n = ds.length; let peak = 0, sum = 0; for (let i = 0; i < n; i++){ const a = Math.abs(ds[i]); peak = Math.max(peak, a); sum += a*a; }
               const rms = Math.sqrt(sum / Math.max(1,n));
-              log('=> audio', `bytes=${pcmBuf.byteLength} peak=${peak.toFixed(2)} rms=${rms.toFixed(2)} buffered=${state.ws.bufferedAmount}`);
+              log('=> audio', `mode=${sendMode} bytes=${pcmBuf.byteLength} peak=${peak.toFixed(2)} rms=${rms.toFixed(2)} buffered=${state.ws.bufferedAmount}`);
             }
           } catch {}
         }
