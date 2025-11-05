@@ -22,6 +22,29 @@
     });
   } catch {}
 
+  // Robust DOM ready + binding helpers
+  const onReady = (cb) => {
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', cb, { once: true });
+    else queueMicrotask(cb);
+  };
+  const bindOnce = (selector, type, handler) => {
+    const attach = (el) => {
+      try { el.addEventListener(type, handler, { passive: false }); log('bind', `${selector} ${type}`); } catch {}
+    };
+    let el = null;
+    try { el = document.querySelector(selector); } catch {}
+    if (el) { attach(el); return; }
+    onReady(() => {
+      try { const n = document.querySelector(selector); if (n) attach(n); } catch {}
+    });
+    try {
+      const mo = new MutationObserver(() => {
+        try { const n = document.querySelector(selector); if (n) { attach(n); mo.disconnect(); } } catch {}
+      });
+      mo.observe(document.documentElement, { childList: true, subtree: true });
+    } catch {}
+  };
+
   const wsUrl = (window.Env && window.Env.WS_URL) || 'wss://quran.asimo.io/realtime/v1/ws';
   try { const elWs = $('wsUrl'); if (elWs) elWs.textContent = wsUrl; } catch {}
   const urlParams = new URLSearchParams(location.search);
@@ -2732,19 +2755,20 @@
     }
   }
 
-  ensureElement('btnConnect', (el) => el.addEventListener('click', async () => {
-    if (state.connected) {
-      state.ws && state.ws.close();
-      return;
-    }
+  bindOnce('#btnConnect', 'click', async (ev) => {
+    try { ev.preventDefault?.(); } catch {}
+    log('connect.click');
+    if (state.connected) { try { state.ws && state.ws.close(); } catch {}; return; }
     state.audioUnlockPending = true;
     await startConnection();
-  }));
-  ensureElement('btnMic', (el) => el.addEventListener('click', () => {
+  });
+  bindOnce('#btnMic', 'click', (ev) => {
+    try { ev.preventDefault?.(); } catch {}
+    log('mic.click');
     state.audioUnlockPending = true;
     unlockIOSAudio(state.playCtx || state.audioContext || null);
     return state.micActive ? stopMic() : startMic();
-  }));
+  });
   ensureElement('btnClear', (el) => el.addEventListener('click', () => { const t = $('transcript'); if (t) t.textContent=''; const l=$('log'); if (l) l.value=''; metrics.sentBytesAudio=metrics.sentAppends=metrics.recvAudioChunks=metrics.recvAudioBytes=metrics.recvTranscriptChars=0; renderMetrics(); }));
   ensureElement('btnDownload', (el) => el.addEventListener('click', () => {
     try {
