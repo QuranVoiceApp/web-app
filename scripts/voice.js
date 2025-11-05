@@ -1528,6 +1528,13 @@
         }
         break;
       }
+      case 'ingress.commit_deferred':
+      case 'ingress.commit_deferred@v1': {
+        const need = msg.needed_bytes || msg.neededBytes;
+        const have = msg.have_bytes || msg.haveBytes;
+        try { log('commit.deferred', `need=${need} have=${have}`); } catch {}
+        break;
+      }
       case 'response.created':
         $('transcript').textContent = '';
         state.responseActive = true;
@@ -1743,6 +1750,12 @@
       case 'input_audio_buffer.committed':
         // No-op: counters reset on our own commit helper
         break;
+      case 'input_audio_buffer.cleared': {
+        // Reset commit gating counters when server clears buffer
+        framesSinceCommit = 0;
+        msSinceLastCommit = 0;
+        break;
+      }
       default:
         // Keep concise, but log unknown types (more verbose in diag)
         if (rawType) {
@@ -2539,6 +2552,9 @@
       } catch {}
       try { if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify({ type: 'input_audio_buffer.clear' })); } catch {}
       state._seq = 0;
+      // Reset commit gating counters at mic start
+      framesSinceCommit = 0;
+      msSinceLastCommit = 0;
       let ctx;
       let source;
       let stream = null;
