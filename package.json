@@ -7,7 +7,9 @@
     "test:phase2": "node tests/fir.spec.cjs && node tests/drift.spec.cjs && node tests/watchdog.spec.cjs && node tests/phase2.sim.cjs",
     "test:phase3": "npx playwright test tests/bargein.spec.ts",
     "test:phase4": "npx playwright test tests/playback.spec.ts",
-    "test:phase5": "npx playwright test tests/ui_pills.spec.ts"
+    "test:phase5": "npx playwright test tests/ui_pills.spec.ts",
+    "test:e2e-chromium": "npx playwright test tests/e2e/voice.chromium.spec.ts --project=chromium --reporter=list,html",
+    "test:e2e-webkit": "npx playwright test tests/e2e/voice.webkit.spec.ts --project=webkit --reporter=list,html"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.2"

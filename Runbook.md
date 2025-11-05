@@ -7,7 +7,11 @@ Flags
 Debug endpoints (backend)
 - POST /debug/tts-ping?trace_id=...&tone_hz=880 — inject debug audio
 - POST /debug/loopback?trace_id=...&frames=10 — replay last PCM frames
+- POST /debug/tts-chirp|/debug/tts-sweep — deterministic audio for playback/JB tests
+- POST /debug/tts-burst — bursty tone for underrun resiliency tests
+- POST /debug/delta-jitter — bursty deltas for JB coverage
 - GET  /metrics/health — JSON snapshot for CI asserts
+ - GET  /metrics — Prometheus text exposition
 
 Prod sanity (Chromium/WebKit)
 1) Open https://app.asimo.io/index.html?ff=seq_json,ui_pills,sim_input&diag=1
@@ -26,4 +30,3 @@ Artifacts
 Quick CI
 - FE: gh workflow run e2e -R QuranVoiceApp/web-app
 - BE: gh workflow run "Backend CI & Deploy" -R QuranVoiceApp/quran-voice-tutor
-

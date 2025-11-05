@@ -299,9 +299,11 @@
       else setTimeout(bindLater, 0);
     } catch {}
   };
-  // Strict commit gating counters – do not commit unless ≥5 frames (≈100ms)
+  // Strict commit gating counters – do not commit unless ≥5 frames (≈100ms) and ≥4800 bytes
   let framesSinceCommit = 0;
   let msSinceLastCommit = 0;
+  let bytesSinceCommit = 0;
+  const MIN_COMMIT_BYTES = 4800; // matches backend commit deferral gate
   const IDLE_COMMIT_MS = 1200;
   const scheduleIdleCommit = (reason = 'timer') => {
     if (state.idleCommitTimer) {
@@ -311,7 +313,7 @@
     state.idleCommitTimer = setTimeout(() => {
       state.idleCommitTimer = null;
       if (state.ws && state.ws.readyState === 1) {
-        if (sendAudioCommit(reason)) {
+        if (bytesSinceCommit >= MIN_COMMIT_BYTES && sendAudioCommit(reason)) {
           log('auto-commit (idle)', reason);
         }
       }
@@ -334,10 +336,13 @@
           if (state.responseActive) { log('commit.skipped responseActive'); return; }
           const ageOk = (Date.now() - (state.lastAudioSentAt||0)) > (commitDelay - 50);
           const framesOk = framesSinceCommit >= 5;
-          if (ageOk && framesOk && (metrics.sentAppends||0) > 0) {
+          const bytesOk = bytesSinceCommit >= MIN_COMMIT_BYTES;
+          if (ageOk && framesOk && bytesOk && (metrics.sentAppends||0) > 0) {
             if (sendAudioCommit('inactivity')) log('auto-commit (inactivity)');
           } else if (!framesOk) {
             try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
+          } else if (!bytesOk) {
+            try { log(`commit.skipped bytes=${bytesSinceCommit}`); } catch {}
           }
         } catch {}
       }, commitDelay);
@@ -1936,9 +1941,10 @@
       try { log('commit.skipped responseActive'); } catch {}
       return false;
     }
-    // Enforce ≥100ms of buffered audio (≥5 frames of 20ms)
-    if (framesSinceCommit < 5 || msSinceLastCommit < 100) {
+    // Enforce ≥100ms of buffered audio (≥5 frames of 20ms) AND ≥4800B appended
+    if (framesSinceCommit < 5 || msSinceLastCommit < 100 || bytesSinceCommit < MIN_COMMIT_BYTES) {
       try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
+      if (bytesSinceCommit < MIN_COMMIT_BYTES) { try { log(`commit.skipped bytes=${bytesSinceCommit}`); } catch {} }
       return false;
     }
     if (FF.barge_in && state.tailPadNeeded) {
@@ -1948,9 +1954,14 @@
     try {
       state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
       // Reset gating counters
+      try {
+        const prevAppends = state.appendsSinceCommit || 0;
+        window.__qvtMetrics = Object.assign(window.__qvtMetrics || {}, { lastCommit: { reason, appendsBeforeCommit: prevAppends, bytesBeforeCommit: bytesSinceCommit, ts: Date.now() } });
+      } catch {}
       framesSinceCommit = 0;
       msSinceLastCommit = 0;
       state.appendsSinceCommit = 0;
+      bytesSinceCommit = 0;
       state.lastCommitReason = reason;
       if (FF.barge_in) {
         clearBargeResumeTimer();
@@ -1975,8 +1986,11 @@
     if (!state.ws || state.ws.readyState !== 1) return false;
     try {
       if (resolvedSendPath === 'json+seq' || resolvedSendPath === 'json') {
+        // Always include a monotonically increasing sequence for JSON appends
+        try { state._seq = (state._seq || 0) + 1; } catch { state._seq = 1; }
         state.ws.send(JSON.stringify({
           type: 'input_audio_buffer.append',
+          seq: state._seq,
           audio: arrayBufferToBase64(pcmBuf),
         }));
       } else {
@@ -1993,6 +2007,7 @@
       framesSinceCommit += 1;
       msSinceLastCommit += 20;
       state.appendsSinceCommit = (state.appendsSinceCommit || 0) + 1;
+      try { bytesSinceCommit += pcmBuf.byteLength || 0; } catch { bytesSinceCommit = 0; }
       return true;
     } catch (err) {
       log('sendAudioFrame error', err?.message || err);
@@ -2127,10 +2142,11 @@
         try { if (state.stragglerTimer) clearTimeout(state.stragglerTimer); } catch {}
         state.stragglerTimer = setTimeout(() => {
           try {
-            if (framesSinceCommit >= 5) {
+            if (framesSinceCommit >= 5 && bytesSinceCommit >= MIN_COMMIT_BYTES) {
               if (sendAudioCommit('straggler')) log('auto-commit (straggler flush)');
             } else {
               try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
+              if (bytesSinceCommit < MIN_COMMIT_BYTES) { try { log(`commit.skipped bytes=${bytesSinceCommit}`); } catch {} }
             }
           } catch {}
         }, 30);
