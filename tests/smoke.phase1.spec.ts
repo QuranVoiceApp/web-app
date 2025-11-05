@@ -1,22 +1,21 @@
 import { test, expect } from '@playwright/test';
+// @ts-ignore
+import { attachLogTaps } from '../helpers/log-tap';
+// @ts-ignore
+import { findBadLogs } from '../helpers/expect-no-bad-logs';
 
 const sha = process.env.SHORTSHA || process.env.PHASE1_SHA || process.env.GITHUB_SHA || 'dev';
 const shortSha = sha.slice(0, 7);
 const BASE_URL = process.env.BASE_URL || 'https://app.asimo.io/';
 const TARGET_URL = process.env.PHASE1_URL || `${BASE_URL}?ff=seq_json,sim_input&diag=1&auto=1&v=${shortSha}`;
 
-test('Phase 1 transport sanity', async ({ page }) => {
-  const consoleErrors: string[] = [];
-  page.on('console', (msg) => {
-    if (msg.type() === 'error') {
-      const text = msg.text();
-      if (text.includes('frame-ancestors')) return;
-      consoleErrors.push(text);
-    }
-  });
+test('Phase 1 transport + sim playback sanity', async ({ page }) => {
+  const taps = await attachLogTaps(page);
 
   const target = test.info().config.use?.baseURL || TARGET_URL;
   await page.goto(target, { waitUntil: 'domcontentloaded' });
+  // Connect explicitly to avoid SW autoStart edge cases
+  await page.getByRole('button', { name: /connect/i }).click();
 
   await page.waitForFunction(() => {
     const testHooks = (window as any).__qvtTest;
@@ -49,7 +48,16 @@ test('Phase 1 transport sanity', async ({ page }) => {
   expect(metrics.commitWindowMs).toBeGreaterThanOrEqual(minCommit);
   expect(metrics.commitWindowMs).toBeLessThanOrEqual(maxCommit);
   expect(metrics.sentAppends).toBeGreaterThanOrEqual(4);
-  expect(metrics.recvAudioChunks).toBeGreaterThanOrEqual(0);
+  // Should be receiving audio in sim path
+  expect(metrics.recvAudioChunks).toBeGreaterThan(0);
 
-  expect(consoleErrors).toEqual([]);
+  // Audio element should be playing (currentTime advancing)
+  const audioBefore = await page.evaluate(() => (document.getElementById('qvtOut') as HTMLAudioElement)?.currentTime ?? 0);
+  await page.waitForTimeout(800);
+  const audioAfter = await page.evaluate(() => (document.getElementById('qvtOut') as HTMLAudioElement)?.currentTime ?? 0);
+  expect(audioAfter).toBeGreaterThan(audioBefore);
+
+  // Fail on bad logs
+  const failures = findBadLogs(taps.console, taps.app);
+  expect(failures).toEqual([]);
 });

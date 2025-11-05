@@ -1948,6 +1948,10 @@
     try {
       state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
       // Reset gating counters
+      try {
+        const prevAppends = state.appendsSinceCommit || 0;
+        window.__qvtMetrics = Object.assign(window.__qvtMetrics || {}, { lastCommit: { reason, appendsBeforeCommit: prevAppends, ts: Date.now() } });
+      } catch {}
       framesSinceCommit = 0;
       msSinceLastCommit = 0;
       state.appendsSinceCommit = 0;
@@ -1975,8 +1979,11 @@
     if (!state.ws || state.ws.readyState !== 1) return false;
     try {
       if (resolvedSendPath === 'json+seq' || resolvedSendPath === 'json') {
+        // Always include a monotonically increasing sequence for JSON appends
+        try { state._seq = (state._seq || 0) + 1; } catch { state._seq = 1; }
         state.ws.send(JSON.stringify({
           type: 'input_audio_buffer.append',
+          seq: state._seq,
           audio: arrayBufferToBase64(pcmBuf),
         }));
       } else {

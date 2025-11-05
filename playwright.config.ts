@@ -11,12 +11,15 @@ export default defineConfig({
   expect: {
     timeout: 20_000,
   },
-  reporter: [['line']],
+  reporter: [['list'], ['html', { outputFolder: 'playwright-report', open: 'never' }]],
   use: {
     baseURL,
     headless: true,
     ignoreHTTPSErrors: true,
-    trace: 'on-first-retry',
+    trace: 'retain-on-failure',
+    screenshot: 'only-on-failure',
+    video: 'retain-on-failure',
+    recordHar: { mode: 'minimal', path: 'playwright-report/har.har' },
   },
   projects: [
     {
