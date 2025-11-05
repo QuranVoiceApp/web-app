@@ -22,6 +22,19 @@ jobs:
           name: playwright-report-chromium
           path: playwright-report/**
           if-no-files-found: warn
+      - name: Backend metrics gate (prod)
+        run: |
+          set -e
+          json=$(curl -fsSL https://quran.asimo.io/api/metrics/health)
+          python3 - <<'PY'
+          import json,sys
+          data=json.loads(sys.argv[1])
+          m=data.get('metrics',data.get('counters',{}))
+          assert m.get('empty_commit_total',0)==0, f"empty_commit_total != 0: {m.get('empty_commit_total')}"
+          assert m.get('tts_underrun_total',0)==0, f"tts_underrun_total != 0: {m.get('tts_underrun_total')}"
+          assert m.get('deferred_commit_total',0)>0, f"deferred_commit_total <= 0: {m.get('deferred_commit_total')}"
+          print('Metrics gate OK:', {k:m.get(k) for k in ['empty_commit_total','deferred_commit_total','tts_underrun_total']})
+PY
 
   e2e-webkit:
     runs-on: macos-latest
