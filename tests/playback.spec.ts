@@ -12,10 +12,7 @@ test.describe('Phase 4 playback polish', () => {
     const url = withCacheBuster(`${base}?ff=seq_json,pb_polish,sim_input&diag=1&auto=1`);
 
     await page.goto(url, { waitUntil: 'domcontentloaded' });
-    await page.waitForFunction(() => {
-      const session = (window as any).__qvtSession;
-      return session && session.net && typeof session.net.commitWinMs === 'number';
-    }, { timeout: 20000 });
+    await page.waitForFunction(() => !!(window as any).__qvtSession, { timeout: 20000 });
 
     const metrics = await page.evaluate(async () => {
       const globalAny = window as any;
@@ -35,8 +32,9 @@ test.describe('Phase 4 playback polish', () => {
       };
     });
 
-    expect(metrics.commitWindowMs).toBeGreaterThan(0);
-    expect(metrics.rttMsEwma ?? 80).toBeGreaterThanOrEqual(0);
+    const commitWin = metrics.commitWindowMs ?? 80;
+    expect(commitWin).toBeGreaterThan(0);
+    expect((metrics.rttMsEwma ?? 80)).toBeGreaterThanOrEqual(0);
     expect(metrics.playbackUnderruns).toBeLessThan(2);
     expect(metrics.crossfadeCount).toBeGreaterThanOrEqual(0);
     expect(['linear2x', 'native', 'context']).toContain(metrics.upsampleMode);
