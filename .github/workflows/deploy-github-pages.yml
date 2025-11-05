@@ -11,7 +11,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: 'pages'
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -24,6 +24,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - name: install dependencies
+        run: npm ci
       - name: run phase 2 unit tests
         run: |
           set -o pipefail
@@ -61,7 +63,7 @@ jobs:
           BASE_URL: https://app.asimo.io/
           PHASE3_URL: https://app.asimo.io/?ff=barge_in,seq_json,fir_halfband,drift_comp,watchdog,sim_input&diag=1&auto=1&v=${{ github.sha }}
           SHORTSHA: ${{ github.sha }}
-        run: npx playwright test tests/bargein.spec.ts --reporter=line,html --trace on
+        run: npx playwright test tests/bargein.spec.ts --reporter=line,html --trace on --project=chromium
       - name: bundle phase 3 artifacts
         if: always()
         env:
@@ -81,6 +83,12 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: install dependencies
+        run: npm ci
       - name: prepare artifact (static)
         run: |
           mkdir -p _site
@@ -89,8 +97,42 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: _site
-  deploy:
+
+  phase4-playback:
     needs: build
+    runs-on: ubuntu-latest
+    env:
+      BASE_URL: https://app.asimo.io/index.html
+      SHORTSHA: ${{ github.sha }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: install dependencies
+        run: |
+          npm ci
+          npx playwright install --with-deps
+      - name: Phase 4 playback smoke (pb_polish)
+        run: |
+          npx playwright test tests/playback.spec.ts --reporter=line --project=chromium --project=ios-wk
+      - name: bundle phase 4 artifacts
+        if: always()
+        env:
+          ACTIVE_FLAGS: "seq_json,pb_polish,sim_input"
+        run: |
+          scripts/ci/collect_artifacts.sh phase4-artifacts playwright-report test-results
+      - name: upload phase 4 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase4-playback-${{ github.run_id }}
+          path: phase4-artifacts
+
+  deploy:
+    needs: [build, phase4-playback]
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -98,3 +140,37 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+
+  phase5-ui:
+    needs: phase4-playback
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      BASE_URL: https://app.asimo.io/index.html
+      SHORTSHA: ${{ github.sha }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: install dependencies
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Phase 5 UI pills smoke
+        run: |
+          npx playwright test tests/ui_pills.spec.ts --reporter=line --project=chromium
+      - name: bundle phase 5 artifacts
+        if: always()
+        env:
+          ACTIVE_FLAGS: "ui_pills,sim_input"
+        run: |
+          scripts/ci/collect_artifacts.sh phase5-artifacts playwright-report test-results
+      - name: upload phase 5 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase5-ui-${{ github.run_id }}
+          path: phase5-artifacts

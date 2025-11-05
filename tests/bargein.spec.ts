@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 const sha = process.env.SHORTSHA || process.env.GITHUB_SHA || 'dev';
 const shortSha = sha.slice(0, 7);
 const BASE_URL = process.env.BASE_URL || 'https://app.asimo.io/';
-const TARGET_URL = process.env.PHASE3_URL || `${BASE_URL}?ff=barge_in,seq_json,fir_halfband,drift_comp,watchdog,sim_input&diag=1&auto=1&v=${shortSha}`;
+const TARGET_URL = process.env.PHASE3_URL || `${BASE_URL}?ff=barge_in,seq_json,fir_halfband,drift_comp,watchdog,sim_input&diag=1&v=${shortSha}`;
 
 const hasMessage = (messages: unknown[], needle: string) =>
   messages.some((entry) => typeof entry === 'string' && entry.includes(needle));
@@ -52,7 +52,14 @@ test('Phase 3 barge-in suspend/resume/cancel flow', async ({ page }) => {
     state: window.__qvtTest.getState(),
   }));
   expect(commitPayload.sent.some((entry) => entry.type === 'string' && (entry as any).value.includes('response.cancel'))).toBeTruthy();
-  expect(commitPayload.sent.some((entry) => entry.type === 'buffer')).toBeTruthy();
+  const hasTailPad = commitPayload.sent.some((entry) => {
+    if (entry.type === 'buffer') return true;
+    if (entry.type === 'string' && typeof (entry as any).value === 'string') {
+      return (entry as any).value.includes('input_audio_buffer.append');
+    }
+    return false;
+  });
+  expect(hasTailPad).toBeTruthy();
   expect(commitPayload.state.counters.cancelEvents).toBeGreaterThan(0);
   expect(commitPayload.state.bargeInActive).toBeFalsy();
 });

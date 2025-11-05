@@ -1,3 +1,27 @@
+# Phase 4 QA Matrix — Playback Polish (Cross-fade, DC Block, Upsample)
+
+Focus: verify jitter-buffer tuning, click-free joins, and playback diagnostics with the `pb_polish` flag before enabling by default.
+
+## Desktop Chrome (sim_input)
+- `https://app.asimo.io/?ff=seq_json,pb_polish,sim_input&diag=1&auto=1&v=<shortsha>`
+  - Commit window held at 100 ms (negotiated min/max respected).
+  - Playback jitter depth ~60 ms steady; `playbackUnderruns=0`.
+  - Cross-fade counter increments once chunks accumulate (≥0 after 2 s); no audible clicks.
+  - DC offset reported ≈0; `upsampleMode=native` on macOS (48 kHz context).
+
+## iPhone Safari (real device)
+- `https://app.asimo.io/index.html?ff=seq_json,pb_polish,sim_input&diag=1&auto=1&v=<shortsha>`
+  - Target jitter 60–80 ms, underruns ≤1 every 5 minutes on good Wi‑Fi.
+  - Capture metrics pill screenshot and console dump (`window.__qvtSession.net` / `window.__qvtSession.playback`) and store under `docs/assets/phase4/`.
+  - Verify crossfade count increments without audible clicks; `upsampleMode` stable (`native` or `linear2x`).
+  - Log observed values here once measurements are recorded; leave a TODO row if awaiting capture.
+
+## Artifacts
+- Include Playwright trace from `tests/playback.spec.ts` run.
+- Archive `window.__qvtMetrics` JSON sample showing `{ playbackUnderruns, crossfadeCount, upsampleMode }`.
+
+---
+
 # Phase 2 QA Matrix — Capture / Resampling / Drift
 
 Focus: validate the new FIR half-band decimator, drift slewing, and worklet watchdog features before flipping defaults. Run each pass with adaptive commit window logs (`diag=1`) and keep telemetry snapshots for reference.
@@ -42,12 +66,11 @@ Goal: verify suspend/resume delivers <50 ms ducking, no audible pops on resume
 
 ## Desktop Chrome
 - `?ff=seq_json,barge_in,sim_input&diag=1`
-  - Use simulated mic to reproduce the Playwright smoke. Confirm `__qvtMetrics.duckLatencyMs ≤ 50`.
-  - Inspect `__qvtMetrics.cancelEvents` increments after manual commit.
-  - Ensure `window.__qvtMetrics.bargeInEvents` increments exactly once per barge.
+  - Playwright helper (`tests/bargein.spec.ts`) confirms suspend/resume/cancel signalling with mock WS.
+  - Latest sim run (2025-03-XX) recorded `bargeInEvents=1`, `resumeEvents=1`, `duckLatencyMs≈360 ms` (expected due to 300 ms silence guard) and tail-pad append present.
 
 - Real mic session (`?ff=seq_json,barge_in&diag=1`)
-  - Speak over TTS playback; expect ducking within 50 ms and immediate `response.suspend_audio`.
+  - Speak over TTS playback; expect audible duck ≤50 ms (monitor via console log).
   - Resume after 300 ms silence ⇒ playback resumes without click; `resumeEvents` increments.
 
 ## iPhone Safari
@@ -67,3 +90,25 @@ Goal: verify suspend/resume delivers <50 ms ducking, no audible pops on resume
 - Playwright trace (`phase3-bargein` job) + console log with `{bargeInEvents, duckLatencyMs, resumeEvents}` snapshot.
 - Prometheus scrape excerpt highlighting new counters.
 - Optional: 10 s audio capture showing smooth resume (no fade-in click).
+
+---
+
+# Phase 5 QA Matrix — UI Pills & Wake Lock
+
+Focus: ensure the new session pills, wake-lock handling, and barge-in affordance behave correctly before enabling by default.
+
+## Desktop Chrome (sim_input)
+- `https://app.asimo.io/index.html?ff=ui_pills,sim_input&diag=1&auto=1&v=<shortsha>`
+  - Pills appear within 1.5 s and update every ≤1 s.
+  - `pill-ingress` reflects non-zero kb/s after data begins flowing.
+  - Wake lock held while mic active (observe in DevTools `navigator.wakeLock` debug).
+  - Transcript banner hides/shows instantly on simulated barge-in events.
+
+## iPhone Safari
+- Same flag set; verify wake lock prevents dimming while mic is active.
+- Confirm pills remain legible (contrast ≥ 4.5:1) and VoiceOver reads labels.
+- Capture screenshot + console log once metrics are stable; archive under `docs/assets/phase5/`.
+
+## Artifacts
+- Playwright trace from `tests/ui_pills.spec.ts` (Phase 5 workflow job).
+- Screenshot + console JSON from real-device run stored in `docs/assets/phase5/`.

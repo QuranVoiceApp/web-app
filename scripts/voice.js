@@ -26,6 +26,8 @@
       drift_comp: set.has('drift_comp'),
       watchdog: set.has('watchdog'),
       barge_in: set.has('barge_in'),
+      ui_pills: set.has('ui_pills'),
+      pb_polish: set.has('pb_polish'),
       sim_input: set.has('sim_input'),
       diag: set.has('diag') || urlParams.get('diag') === '1',
       telemetry: !set.has('no_telemetry'),
@@ -34,6 +36,14 @@
   })();
   try { window.__qvtFlagTokens = ffTokens.slice(); } catch {}
   const activeFlags = ffTokens.join(',') || 'none';
+  try {
+    const existingFlags = (window.__qvtSession && window.__qvtSession.flags) || {};
+    const mergedFlags = Object.assign({}, existingFlags, FF);
+    window.__qvtSession = Object.assign({}, window.__qvtSession, {
+      flags: mergedFlags,
+      flagTokens: ffTokens.slice(),
+    });
+  } catch {}
 
   // Stable diagnostics/test surface exported for CI and smokes.
   try {
@@ -102,6 +112,9 @@
 
   emitVersionBanner();
   log('flags', activeFlags || 'none');
+  if (diag) {
+    try { log('flags.resolved', JSON.stringify(FF)); } catch {}
+  }
   const uaStr = (navigator.userAgent || '').toLowerCase();
   const isIOS = /iphone|ipad|ipod/.test(uaStr);
   const isSafari = uaStr.includes('safari') && !uaStr.includes('chrome');
@@ -122,6 +135,7 @@
   const agcRate = Math.max(0.001, parseFloat(urlParams.get('agcRate') || '0.02')); // adaptation per chunk
   const limiterThr = Math.min(0.999, Math.max(0.5, parseFloat(urlParams.get('lim') || '0.9')));
   const autoStart = urlParams.get('auto') === '1';
+  const canSelectOutput = (typeof HTMLMediaElement !== 'undefined' && HTMLMediaElement.prototype && 'setSinkId' in HTMLMediaElement.prototype) && !isIOS;
   log('sendMode', sendMode);
   if (diag) log('diag', 'on');
   if (diag && softwareGain !== 1) log('gain', String(softwareGain));
@@ -159,6 +173,55 @@
       }, commitDelay);
     } catch {}
   }
+  const uiPillRefs = (() => {
+    const root = document.getElementById('uiPills');
+    if (!root) return null;
+    return {
+      root,
+      ingress: document.querySelector('[data-testid="pill-ingress"]'),
+      rtt: document.querySelector('[data-testid="pill-rtt"]'),
+      asr: document.querySelector('[data-testid="pill-asr"]'),
+      barge: document.querySelector('[data-testid="pill-barge"]'),
+      playback: document.querySelector('[data-testid="pill-playback"]'),
+    };
+  })();
+
+  const setUiPillsVisible = (on) => {
+    if (!uiPillRefs || !uiPillRefs.root) return;
+    uiPillRefs.root.style.display = on ? 'flex' : 'none';
+  };
+
+  const updateUiPills = () => {
+    if (!FF.ui_pills || !uiPillRefs) return;
+    setUiPillsVisible(true);
+    try {
+      if (uiPillRefs.ingress) {
+        const val = Number.isFinite(state.ingressRateKbps)
+          ? `${Math.max(0, state.ingressRateKbps).toFixed(1)} kb/s`
+          : '0 kb/s';
+        uiPillRefs.ingress.textContent = val;
+      }
+      if (uiPillRefs.rtt) {
+        const rtt = Number.isFinite(state.net?.rttMsEwma)
+          ? `${Math.round(state.net.rttMsEwma)} ms`
+          : '–';
+        uiPillRefs.rtt.textContent = rtt;
+      }
+      if (uiPillRefs.asr) {
+        uiPillRefs.asr.textContent = state.partialActive ? 'ASR partial' : 'ASR idle';
+        uiPillRefs.asr.setAttribute('data-state', state.partialActive ? 'on' : 'off');
+      }
+      if (uiPillRefs.barge) {
+        uiPillRefs.barge.textContent = state.bargeInActive ? 'Barge-in' : 'Idle';
+        uiPillRefs.barge.setAttribute('data-state', state.bargeInActive ? 'on' : 'off');
+      }
+      if (uiPillRefs.playback) {
+        const txt = `${state.playbackUnderruns || 0} underruns`;
+        uiPillRefs.playback.textContent = txt;
+      }
+    } catch {}
+  };
+
   const renderMetrics = () => {
     const m = $('metrics'); if (!m) return;
     const nzPct = metrics.totalSamples ? Math.round((metrics.nzSamples / metrics.totalSamples) * 100) : 0;
@@ -166,7 +229,10 @@
     const winDisplay = commitWindowMs();
     const driftDisplay = (FF.drift_comp && typeof state.driftPpm === 'number') ? ` · drift=${Math.round(state.driftPpm)}ppm` : '';
     const jitterDisplay = state.jitterMs ? ` · jitter=${Math.round(state.jitterMs)}ms` : '';
-    m.textContent = `sentAppends=${metrics.sentAppends} sentBytesAudio=${metrics.sentBytesAudio}B · recvAudioChunks=${metrics.recvAudioChunks} recvAudioBytes=${metrics.recvAudioBytes}B · transcriptChars=${metrics.recvTranscriptChars} · nz=${nzPct}% · rtt=${rttDisplay}ms · commitWin=${winDisplay}ms${driftDisplay}${jitterDisplay}`;
+    const playbackDisplay = (FF.pb_polish || state.playbackUnderruns > 0)
+      ? ` · pbUnderruns=${state.playbackUnderruns || 0} · crossfade=${state.crossfadeCount || 0}`
+      : '';
+    m.textContent = `sentAppends=${metrics.sentAppends} sentBytesAudio=${metrics.sentBytesAudio}B · recvAudioChunks=${metrics.recvAudioChunks} recvAudioBytes=${metrics.recvAudioBytes}B · transcriptChars=${metrics.recvTranscriptChars} · nz=${nzPct}% · rtt=${rttDisplay}ms · commitWin=${winDisplay}ms${driftDisplay}${jitterDisplay}${playbackDisplay}`;
     try { $('commitWin').textContent = String(winDisplay); } catch {}
     try { $('rttEwma').textContent = String(rttDisplay); } catch {}
     state.commitWinMs = winDisplay;
@@ -191,11 +257,40 @@
           resumeEvents: state.resumeEvents || 0,
           duckLatencyMs: state.duckLatencyMs || 0,
           cancelEvents: state.cancelEvents || 0,
+          playbackUnderruns: state.playbackUnderruns || 0,
+          crossfadeCount: state.crossfadeCount || 0,
+          dcOffset: state.dcOffset || 0,
+          upsampleMode: state.upsampleMode || 'native',
         });
+        try {
+          window.__qvtSession = Object.assign(window.__qvtSession || {}, {
+            net: Object.assign({}, state.net, { commitWinMs: winDisplay, rttMsEwma: state.net?.rttMsEwma }),
+            playback: {
+              jitterMs: state.jitterMs || 0,
+              underruns: state.playbackUnderruns || 0,
+              crossfadeCount: state.crossfadeCount || 0,
+              upsampleMode: state.upsampleMode || 'native',
+            },
+          });
+        } catch {}
         try { window.__qvtTest._markReady(); } catch {}
       }
     } catch {}
+    updateUiPills();
   };
+
+  if (!FF.ui_pills) {
+    setUiPillsVisible(false);
+  } else {
+    updateUiPills();
+  }
+  const speakerRowEl = document.getElementById('speakerRow');
+  if (!canSelectOutput && speakerRowEl) {
+    speakerRowEl.style.display = 'none';
+    const info = $('speakerInfo');
+    if (info) info.textContent = 'Use Control Center to choose speaker / AirPods';
+  }
+  renderMetrics();
 
   const scheduleAutoStart = () => {
     if (!autoStart || scheduleAutoStart._ran) return;
@@ -229,6 +324,43 @@
     } catch {}
   };
 
+  const requestWakeLock = async (active) => {
+    if (!FF.wake_lock) return;
+    if (!('wakeLock' in navigator)) return;
+    try {
+      if (active) {
+        if (!state.wakeLockSentinel) {
+          state.wakeLockSentinel = await navigator.wakeLock.request('screen');
+          state.wakeLockSentinel.addEventListener('release', () => { state.wakeLockSentinel = null; });
+        }
+      } else if (state.wakeLockSentinel) {
+        await state.wakeLockSentinel.release();
+        state.wakeLockSentinel = null;
+      }
+    } catch (err) {
+      log('wakeLock', err?.message || err);
+    }
+  };
+
+  const bargeBannerEl = document.getElementById('bargeBanner');
+  const transcriptPane = document.getElementById('transcript');
+  if (bargeBannerEl) bargeBannerEl.style.display = 'none';
+
+  const setTranscriptDim = (on) => {
+    if (!FF.ui_pills || !transcriptPane) return;
+    transcriptPane.classList.toggle('transcript-dim', !!on);
+  };
+
+  const showBargeBanner = (on, message = 'Listening…') => {
+    if (!FF.ui_pills || !bargeBannerEl) return;
+    if (on) {
+      bargeBannerEl.style.display = '';
+      bargeBannerEl.textContent = message;
+    } else {
+      bargeBannerEl.style.display = 'none';
+    }
+  };
+
   const clearBargeResumeTimer = () => {
     if (state.bargeResumeTimer) {
       try { clearTimeout(state.bargeResumeTimer); } catch {}
@@ -248,6 +380,11 @@
     state.bargeDuckAt = performance.now();
     state.duckLatencyMs = 0;
     setTtsGain(0.2); // ~ -14 dB
+    if (FF.ui_pills) {
+      setTranscriptDim(true);
+      showBargeBanner(true, 'Barge-in active');
+      updateUiPills();
+    }
   };
 
   const resumeBarge = (mode = 'resume') => {
@@ -268,6 +405,11 @@
     state.bargeInActive = false;
     if (mode === 'resume') state.resumeEvents += 1;
     setTtsGain(1.0);
+    if (FF.ui_pills) {
+      setTranscriptDim(false);
+      showBargeBanner(false);
+      updateUiPills();
+    }
   };
 
   const scheduleBargeResume = () => {
@@ -344,6 +486,14 @@
     watchdogActiveMode: null,
     watchdogController: null,
     jitterMs: 0,
+    playbackUnderruns: 0,
+    crossfadeCount: 0,
+    dcOffset: 0,
+    upsampleMode: 'native',
+    wakeLockSentinel: null,
+    ingressRateKbps: 0,
+    lastIngressSample: null,
+    partialActive: false,
     bargeInActive: false,
     bargeDuckAt: 0,
     bargeResumeTimer: null,
@@ -354,6 +504,18 @@
     tailPadNeeded: false,
     cancelEvents: 0,
   };
+  try {
+    window.__qvtSession = Object.assign({}, window.__qvtSession, {
+      net: Object.assign({}, state.net, { commitWinMs: state.net.minCommitMs ?? 100, rttMsEwma: state.net.rttMsEwma }),
+      playback: {
+        jitterMs: state.jitterMs || 0,
+        underruns: state.playbackUnderruns || 0,
+        crossfadeCount: state.crossfadeCount || 0,
+        upsampleMode: state.upsampleMode || 'native',
+        dcOffset: state.dcOffset || 0,
+      },
+    });
+  } catch {}
 
   const ewma = (prev, value, alpha = 0.2) => (prev == null ? value : (alpha * value) + ((1 - alpha) * prev));
   const commitWindowMs = () => {
@@ -376,6 +538,8 @@
     if (state.net.serverInHz) state.serverInHz = state.net.serverInHz;
     try { renderMetrics(); } catch {}
   };
+  const normalizeEventType = (type) => (type || '').replace(/@v\d+$/, '');
+
   const startDiagPinger = () => {
     if (!FF.diag) return;
     if (state._pingTimer) return;
@@ -421,9 +585,16 @@
         state.ws = ws;
         state.connected = true;
         setConn(true);
-        log('WebSocket open');
-        startDiagPinger();
-        try { state.playCtx?.resume(); } catch {}
+      log('WebSocket open');
+      startDiagPinger();
+      if (FF.diag && FF.ui_pills) {
+        try {
+          state.commitWinMs = commitWindowMs();
+          updateUiPills();
+          renderMetrics();
+        } catch {}
+      }
+      try { state.playCtx?.resume(); } catch {}
         // Send client state only when diagnostics enabled
         if (FF.diag) {
           try {
@@ -440,7 +611,7 @@
         if (state.outputSupported) {
           if (!state.sinkDest) state.sinkDest = new MediaStreamAudioDestinationNode(state.playCtx);
           if (!state.sinkEl) {
-            const el = new Audio(); el.autoplay = true; el.muted = false; el.srcObject = state.sinkDest.stream;
+            const el = new Audio(); el.autoplay = true; el.muted = false; el.srcObject = state.sinkDest.stream; el.playsInline = true; el.setAttribute('playsinline', '');
             state.sinkEl = el;
           }
           if (state.speakerId) {
@@ -451,38 +622,220 @@
         // Prepare jitter buffer for TTS playback (smooths network jitter)
         try {
           class TtsJitterBuffer {
-            constructor(ctx, destNode, startMs=80, lowMs=60, highMs=180) {
-              this.ctx = ctx; this.dest = destNode || ctx.destination;
-              this.queue = []; this.bufferedMs = 0; this.started = false;
-              this.startMs = startMs; this.lowMs = lowMs; this.highMs = highMs;
-              this.gain = ctx.createGain(); this.gain.connect(this.dest);
+            constructor(ctx, destNode, opts = {}) {
+              const defaults = { startMs: 80, lowMs: 60, highMs: 180, crossfadeMs: 0, dcAlpha: 0.995, pbPolish: false, onMetrics: null };
+              this.opts = Object.assign({}, defaults, opts);
+              this.ctx = ctx;
+              this.dest = destNode || ctx.destination;
+              this.queue = [];
+              this.bufferedSec = 0;
+              this.started = false;
+              this.gain = ctx.createGain();
+              this.gain.connect(this.dest);
+              this.pbPolish = !!this.opts.pbPolish;
+              this.crossfadeMs = Math.max(0, this.opts.crossfadeMs || 0);
+              this.dcAlpha = Number.isFinite(this.opts.dcAlpha) ? this.opts.dcAlpha : 0.995;
+              this.onMetrics = typeof this.opts.onMetrics === 'function' ? this.opts.onMetrics : null;
+              this.dcPrevX = 0;
+              this.dcPrevY = 0;
+              this.dcOffset = 0;
+              this.lastTail = null;
+              this.lastTailRate = null;
+              this.crossfadeCount = 0;
+              this.underruns = 0;
+              this.upsampleMode = 'native';
+              this.dynamicBoostMs = 0;
+              this.boostUntil = 0;
+              this.playCursor = ctx.currentTime;
             }
             setGainLinear(g) { try { this.gain.gain.value = g; } catch {} }
-            pushFloat32Mono24k(f32) {
-              try {
-                const buf = this.ctx.createBuffer(1, f32.length, 24000);
-                buf.copyToChannel(f32, 0);
-                this.queue.push(buf);
-                this.bufferedMs += (buf.length / 24000) * 1000;
-                if (!this.started && this.bufferedMs >= this.startMs) this._drain();
-              } catch {}
+            reset() {
+              this.queue.length = 0;
+              this.bufferedSec = 0;
+              this.started = false;
+              this.lastTail = null;
+              this.lastTailRate = null;
+              this.crossfadeCount = 0;
+              this.underruns = 0;
+              this.upsampleMode = 'native';
+              this.playCursor = this.ctx.currentTime;
+              this._emitMetrics();
             }
-            _drain() {
-              this.started = true;
-              let when = this.ctx.currentTime;
-              while (this.queue.length) {
-                const b = this.queue.shift();
-                const src = this.ctx.createBufferSource();
-                src.buffer = b; src.connect(this.gain); src.start(when);
-                when += b.length / 24000;
+            pushChunk(f32, sampleRate = 24000) {
+              if (!f32 || !f32.length) return;
+              let block = f32 instanceof Float32Array ? f32 : Float32Array.from(f32);
+              if (this.pbPolish) {
+                block = this._dcBlock(block);
+              } else {
+                const mean = block.length ? this._mean(block) : 0;
+                this.dcOffset = 0.95 * this.dcOffset + 0.05 * mean;
               }
-              const aheadMs = Math.max(0, (when - this.ctx.currentTime) * 1000);
-              this.bufferedMs = aheadMs;
-              if (this.bufferedMs < this.lowMs) this.started = false;
+              const up = this._upsampleToContext(block, sampleRate);
+              block = up.data;
+              const usedRate = up.sampleRate;
+              if (this.pbPolish && this.crossfadeMs > 0 && block.length > 1) {
+                const fadeSamples = Math.min(block.length, Math.max(1, Math.round((this.crossfadeMs / 1000) * usedRate)));
+                if (this.lastTail && this.lastTailRate === usedRate && this.lastTail.length && fadeSamples > 1) {
+                  const tailLen = Math.min(fadeSamples, this.lastTail.length, block.length);
+                  for (let i = 0; i < tailLen; i++) {
+                    const t = i / tailLen;
+                    block[i] = (this.lastTail[i] * (1 - t)) + (block[i] * t);
+                  }
+                  this.crossfadeCount += 1;
+                }
+                this.lastTail = block.slice(block.length - Math.min(fadeSamples, block.length));
+                this.lastTailRate = usedRate;
+              } else if (this.crossfadeMs === 0) {
+                this.lastTail = null;
+                this.lastTailRate = null;
+              }
+              const buf = this.ctx.createBuffer(1, block.length, usedRate);
+              buf.copyToChannel(block, 0);
+              this.queue.push({ buffer: buf, duration: block.length / usedRate });
+              this.bufferedSec += block.length / usedRate;
+              this._ensureDrain();
+              this._emitMetrics();
+            }
+            _mean(arr) {
+              let sum = 0;
+              for (let i = 0; i < arr.length; i++) sum += arr[i];
+              return arr.length ? sum / arr.length : 0;
+            }
+            _dcBlock(arr) {
+              const alpha = this.dcAlpha;
+              const out = new Float32Array(arr.length);
+              let prevX = this.dcPrevX;
+              let prevY = this.dcPrevY;
+              let sum = 0;
+              for (let i = 0; i < arr.length; i++) {
+                const x = arr[i];
+                const y = x - prevX + alpha * prevY;
+                out[i] = y;
+                prevX = x;
+                prevY = y;
+                sum += x;
+              }
+              this.dcPrevX = prevX;
+              this.dcPrevY = prevY;
+              const mean = arr.length ? sum / arr.length : 0;
+              this.dcOffset = 0.95 * this.dcOffset + 0.05 * mean;
+              return out;
+            }
+            _upsampleToContext(arr, sampleRate) {
+              const target = this.ctx.sampleRate || sampleRate;
+              if (!this.pbPolish || Math.abs(target - sampleRate) < 1) {
+                this.upsampleMode = Math.abs(target - sampleRate) < 1 ? 'native' : 'context';
+                return { data: arr, sampleRate };
+              }
+              if (Math.abs(target - (sampleRate * 2)) < 1) {
+                const out = new Float32Array(arr.length * 2);
+                for (let i = 0; i < arr.length; i++) {
+                  const sample = arr[i];
+                  const next = (i + 1 < arr.length) ? arr[i + 1] : sample;
+                  const idx = i * 2;
+                  out[idx] = sample;
+                  out[idx + 1] = 0.5 * (sample + next);
+                }
+                this.upsampleMode = 'linear2x';
+                return { data: out, sampleRate: target };
+              }
+              this.upsampleMode = 'context';
+              return { data: arr, sampleRate };
+            }
+            _currentThresholds() {
+              const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+              if (this.dynamicBoostMs > 0 && now > this.boostUntil) {
+                this.dynamicBoostMs = Math.max(0, this.dynamicBoostMs - 10);
+                if (this.dynamicBoostMs === 0) this.boostUntil = 0;
+              }
+              const boost = this.dynamicBoostMs;
+              return {
+                startMs: this.opts.startMs + boost,
+                lowMs: this.opts.lowMs + boost,
+                highMs: this.opts.highMs + boost,
+              };
+            }
+            _recordUnderrun() {
+              this.underruns += 1;
+              if (this.pbPolish) {
+                this.dynamicBoostMs = Math.min(120, (this.dynamicBoostMs || 0) + 20);
+                this.boostUntil = ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) + 30000;
+              }
+            }
+            _ensureDrain() {
+              const thresholds = this._currentThresholds();
+              const bufferedMs = this.bufferedSec * 1000;
+              if (!this.started && bufferedMs >= thresholds.startMs) {
+                this._drain(thresholds);
+              } else if (bufferedMs > thresholds.highMs && this.queue.length > 1) {
+                while (this.queue.length > 1 && this.bufferedSec * 1000 > thresholds.highMs) {
+                  const dropped = this.queue.shift();
+                  this.bufferedSec = Math.max(0, this.bufferedSec - dropped.duration);
+                }
+              }
+            }
+            _drain(thresholds) {
+              this.started = true;
+              let when = Math.max(this.ctx.currentTime + 0.005, this.playCursor || this.ctx.currentTime);
+              while (this.queue.length) {
+                const item = this.queue.shift();
+                const src = this.ctx.createBufferSource();
+                src.buffer = item.buffer;
+                src.connect(this.gain);
+                src.start(when);
+                when += item.duration;
+              }
+              this.playCursor = when;
+              const aheadSec = Math.max(0, when - this.ctx.currentTime);
+              this.bufferedSec = aheadSec;
+              if (aheadSec * 1000 < thresholds.lowMs) {
+                this.started = false;
+                if (aheadSec * 1000 < 15) this._recordUnderrun();
+              }
+              this._emitMetrics();
+            }
+            _emitMetrics() {
+              const aheadMs = Math.max(0, this.bufferedSec * 1000);
+              if (this.onMetrics) {
+                this.onMetrics({
+                  jitterMs: aheadMs,
+                  aheadSec: this.bufferedSec,
+                  playbackUnderruns: this.underruns,
+                  crossfadeCount: this.crossfadeCount,
+                  dcOffset: this.dcOffset,
+                  upsampleMode: this.upsampleMode,
+                });
+              }
             }
           }
           const dest = (state.outputSupported && state.sinkDest) ? state.sinkDest : state.playCtx.destination;
-          state.ttsJB = new TtsJitterBuffer(state.playCtx, dest, 80, 60, 180);
+          state.playbackUnderruns = 0;
+          state.crossfadeCount = 0;
+          state.dcOffset = 0;
+          state.upsampleMode = 'native';
+          const jbOpts = {
+            startMs: FF.pb_polish ? 100 : 80,
+            lowMs: FF.pb_polish ? 70 : 60,
+            highMs: FF.pb_polish ? 220 : 180,
+            crossfadeMs: FF.pb_polish ? 5 : 0,
+            dcAlpha: 0.995,
+            pbPolish: !!FF.pb_polish,
+            onMetrics: (info) => {
+              if (!info) return;
+              state.jitterMs = Math.round(info.jitterMs || 0);
+              state.playbackUnderruns = info.playbackUnderruns || 0;
+              state.crossfadeCount = info.crossfadeCount || 0;
+              state.dcOffset = Number.isFinite(info.dcOffset) ? info.dcOffset : 0;
+              state.upsampleMode = info.upsampleMode || state.upsampleMode;
+              if (Number.isFinite(info.aheadSec) && state.playCtx) {
+                state.playCursor = state.playCtx.currentTime + info.aheadSec;
+              }
+              if (FF.pb_polish && (FF.diag || state.playbackUnderruns > 0)) {
+                try { renderMetrics(); } catch {}
+              }
+            },
+          };
+          state.ttsJB = new TtsJitterBuffer(state.playCtx, dest, jbOpts);
           state.ttsGainNode = state.ttsJB.gain;
         } catch {}
         // Update session with desired voice and (best-effort) VAD threshold
@@ -550,6 +903,17 @@
           if (state.micActive) stopMic();
           if (state._pingTimer) { clearInterval(state._pingTimer); state._pingTimer = null; }
           state._lastPing = null;
+          if (state.ttsJB && typeof state.ttsJB.reset === 'function') {
+            try { state.ttsJB.reset(); } catch {}
+          }
+          state.ttsJB = null;
+          state.ttsGainNode = null;
+          state.jitterMs = 0;
+          state.playCursor = state.playCtx ? state.playCtx.currentTime : 0;
+          state.playbackUnderruns = 0;
+          state.crossfadeCount = 0;
+          state.dcOffset = 0;
+          state.upsampleMode = 'native';
         }
       };
     } catch (e) {
@@ -585,6 +949,10 @@
     if (!state.playCtx) return;
     try {
       // If jitter buffer exists, push to it; else fall back to direct scheduling
+      if (state.ttsJB && typeof state.ttsJB.pushChunk === 'function') {
+        state.ttsJB.pushChunk(f32, sr);
+        return;
+      }
       if (state.ttsJB && typeof state.ttsJB.pushFloat32Mono24k === 'function' && sr === 24000) {
         state.ttsJB.pushFloat32Mono24k(f32);
         return;
@@ -598,11 +966,14 @@
       const when = Math.max(state.playCtx.currentTime + 0.01, state.playCursor);
       src.start(when);
       state.playCursor = when + buf.duration;
+      const aheadSec = Math.max(0, state.playCursor - state.playCtx.currentTime);
+      state.jitterMs = Math.round(aheadSec * 1000);
     } catch (e) { log('playback error', e.message || e); }
   }
 
   function handleServerEvent(msg, raw) {
-    const t = msg.type || '';
+    const rawType = msg.type || '';
+    const t = normalizeEventType(rawType);
     // Handle new output audio delta family (when modalities include audio+text)
     if (t === 'response.output_audio.delta') {
       try {
@@ -636,13 +1007,14 @@
         exportNegotiation(msg.negotiation);
         try { window.__qvtSession.lastType = 'session.started'; } catch {}
         startDiagPinger();
+        if (FF.ui_pills) updateUiPills();
         break;
       }
-      case 'session.audio_status@v1':
+      case 'session.audio_status':
         if (msg.input_sample_rate_hz) state.serverInHz = msg.input_sample_rate_hz;
         log('<= audio_status', `in=${msg.input_sample_rate_hz} out=${msg.output_sample_rate_hz}`);
         break;
-      case 'personalized_greeting@v1':
+      case 'personalized_greeting':
         log('<= greeting', JSON.stringify(msg).slice(0, 160));
         break;
       case 'error':
@@ -651,6 +1023,8 @@
       case 'response.created':
         $('transcript').textContent = '';
         state.responseActive = true;
+        state.partialActive = false;
+        updateUiPills();
         break;
       // Ignore raw OpenAI transcript deltas to avoid double-printing;
       // the proxy also emits transcript_stream which we display.
@@ -658,19 +1032,27 @@
         break;
       case 'response.audio_transcript.done': {
         appendTranscript('\n', true);
+        state.partialActive = false;
+        updateUiPills();
         break;
       }
-      case 'transcript_stream@v1': { // compatibility
+      case 'transcript_stream': { // compatibility
         const text = msg.delta || '';
         appendTranscript(text, !!msg.is_final);
+        state.partialActive = !msg.is_final;
+        updateUiPills();
         break;
       }
       case 'response.output_item.added':
         // Some models may not emit response.created early; treat first output item as active
         state.responseActive = true;
+        state.partialActive = true;
+        if (FF.ui_pills) updateUiPills();
         break;
       case 'response.output_item.done':
         state.responseActive = false;
+        state.partialActive = false;
+        updateUiPills();
         break;
       case 'response.audio.delta': {
         // Support multiple possible payload keys
@@ -692,6 +1074,21 @@
         if (ia && typeof ia === 'object') {
           log('<= ingress', `chunks=${ia.chunks} bytes=${ia.bytes}`);
           try { state.lastIngress = { chunks: ia.chunks||0, bytes: ia.bytes||0, ts: ia.last_ts||Date.now() }; } catch {}
+          if (FF.ui_pills) {
+            try {
+              const now = Date.now();
+              const prev = state.lastIngressSample;
+              const bytes = ia.bytes || 0;
+              if (prev) {
+                const deltaBytes = bytes - (prev.bytes || 0);
+                const deltaMs = Math.max(200, now - (prev.ts || now - 1));
+                const bytesPerSec = (deltaBytes / deltaMs) * 1000;
+                const kbps = Math.max(0, (bytesPerSec * 8) / 1000);
+                state.ingressRateKbps = kbps;
+              }
+              state.lastIngressSample = { bytes, ts: now };
+            } catch {}
+          }
           try {
             const pill = $('ingress-pill');
             if (pill) {
@@ -699,7 +1096,9 @@
               pill.textContent = `Ingress ${ia.chunks || 0} / ${kb} KB`;
             }
           } catch {}
+          updateUiPills();
         }
+        if (FF.ui_pills) updateUiPills();
         break;
       }
       case 'response.audio.done':
@@ -708,10 +1107,14 @@
         log('<=', t);
         try { if (state.ttsGainNode) state.ttsGainNode.gain.value = 1.0; } catch {}
         state.responseActive = false;
+        state.partialActive = false;
+        updateUiPills();
         break;
       case 'response.cancelled':
       case 'response.canceled':
         state.responseActive = false;
+        state.partialActive = false;
+        updateUiPills();
         try { if (state.ttsGainNode) state.ttsGainNode.gain.value = 1.0; } catch {}
         break;
       case 'response.cancelled':
@@ -720,7 +1123,7 @@
         log('<=', t);
         try { if (state.ttsGainNode) state.ttsGainNode.gain.value = 1.0; } catch {}
         break;
-      case 'session.no_audio_ingress@v1':
+      case 'session.no_audio_ingress':
         log('<= no_audio_ingress', JSON.stringify(msg));
         state.eventCounts = state.eventCounts || {}; state.eventCounts['no_audio_ingress'] = (state.eventCounts['no_audio_ingress']||0)+1;
         break;
@@ -760,9 +1163,9 @@
         break;
       default:
         // Keep concise, but log unknown types (more verbose in diag)
-        if (t) {
-          if (diag) log('UNHANDLED', t, raw.slice(0, 160));
-          else log('<=', t);
+        if (rawType) {
+          if (diag) log('UNHANDLED', rawType, raw.slice(0, 160));
+          else log('<=', rawType);
         } else log('<=', raw.slice(0, 160));
     }
   }
@@ -1560,6 +1963,7 @@
         teardownDriftTracker();
       }
       const { analyser, processor } = await configureCapture(ctx, source, { monitor: monitorOverride });
+      await unlockIOSAudio(ctx);
       state.processor = processor;
       state.audioContext = ctx;
       state.mediaStream = stream;
@@ -1567,6 +1971,7 @@
       state.micActive = true;
       $('btnMic').textContent = 'Stop Mic';
       log('Mic started');
+      requestWakeLock(true);
       await calibrateAmbient(analyser);
       setupDiagnostics(ctx, analyser, stream);
       startVisualizer();
@@ -1577,6 +1982,7 @@
       log('Mic error', e.message || e);
       try { stopMic(); } catch {}
     }
+    updateUiPills();
   }
 
 
@@ -1619,9 +2025,17 @@
     state.processor = null; state.audioContext = null; state.mediaStream = null; state.micActive = false;
     $('btnMic').textContent = 'Start Mic';
     log('Mic stopped');
+    requestWakeLock(false);
     // Reset meter display
     try { if (state.meterFill) state.meterFill.style.width = '0%'; if (state.meterText) state.meterText.textContent = 'level: 0%'; if (state.clipEl) state.clipEl.style.display='none'; } catch {}
     stopVisualizer();
+    if (FF.ui_pills) {
+      setTranscriptDim(false);
+      showBargeBanner(false);
+      updateUiPills();
+    }
+    state.ingressRateKbps = 0;
+    state.lastIngressSample = null;
   }
 
   function buildConstraints() {
@@ -1629,15 +2043,18 @@
     const sysProc = String(urlParams.get('sysProc') || '').toLowerCase();
     const wantSys = /^(1|on|true)$/i.test(sysProc);
     const useSys = !!(wantSys && !raw);
-    const c = {
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: Boolean(useSys),
-        autoGainControl: Boolean(useSys),
-        channelCount: 1
-      },
-      video: false
+    const audioConstraints = {
+      echoCancellation: true,
+      noiseSuppression: Boolean(useSys),
+      autoGainControl: Boolean(useSys),
+      channelCount: 1
     };
+    if (isIOS && !raw) {
+      audioConstraints.echoCancellation = true;
+      audioConstraints.noiseSuppression = true;
+      audioConstraints.autoGainControl = false;
+    }
+    const c = { audio: audioConstraints, video: false };
     if (state.deviceId) c.audio.deviceId = { exact: state.deviceId };
     try { log('getUserMedia constraints', JSON.stringify(c)); } catch {}
     return c;
@@ -1856,6 +2273,17 @@
       else if (prev && inputs.some(d => d.deviceId === prev)) sel.value = prev;
       state.deviceId = sel.value || null;
       $('devInfo').textContent = inputs.length ? `${inputs.length} input(s)` : 'No inputs found';
+      if (FF.ui_pills && state.deviceId) {
+        try {
+          const stored = localStorage.getItem(`qvt-cal-${state.deviceId}`);
+          if (stored) {
+            const parsed = JSON.parse(stored);
+            if (parsed && parsed.vad) {
+              $('vadThresh').value = String(parsed.vad);
+            }
+          }
+        } catch {}
+      }
     } catch (e) {
       $('devInfo').textContent = `devices error: ${e.message || e}`;
     }
@@ -1863,6 +2291,14 @@
 
   async function enumerateAudioOutputs() {
     try {
+      const row = document.getElementById('speakerRow');
+      if (!canSelectOutput) {
+        if (row) row.style.display = 'none';
+        const info = $('speakerInfo');
+        if (info) info.textContent = 'Use Control Center to choose speaker / AirPods';
+        return;
+      }
+      if (row) row.style.display = '';
       const devices = await navigator.mediaDevices.enumerateDevices();
       const outputs = devices.filter(d => d.kind === 'audiooutput');
       const sel = $('speaker'); if (!sel) return;
@@ -1901,6 +2337,15 @@
   $('device').addEventListener('change', async () => {
     state.deviceId = $('device').value || null;
     persist();
+    if (FF.ui_pills && state.deviceId) {
+      try {
+        const stored = localStorage.getItem(`qvt-cal-${state.deviceId}`);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed?.vad) $('vadThresh').value = String(parsed.vad);
+        }
+      } catch {}
+    }
     if (state.micActive) { stopMic(); startMic(); }
   });
   $('speaker').addEventListener('change', async () => {
@@ -2005,10 +2450,18 @@
       thr = Math.round(thr * 100) / 100;
       $('vadThresh').value = String(thr);
       persist();
+      if (FF.ui_pills && state.deviceId) {
+        try {
+          localStorage.setItem(`qvt-cal-${state.deviceId}`, JSON.stringify({
+            vad: thr,
+            capturedAt: Date.now(),
+          }));
+        } catch {}
+      }
       log('calibrate', `rms=${rmsAvg.toFixed(3)} peak=${peak.toFixed(3)} => vad=${thr}`);
       // Send live update
       sendSessionUpdate();
-  } catch (e) {
+ } catch (e) {
     log('calibrate error', e.message || e);
   }
 });
@@ -2043,3 +2496,21 @@
     }
   } catch {}
 })();
+  async function unlockIOSAudio(ctx) {
+    if (!isIOS) return;
+    if (!ctx) return;
+    try {
+      if (ctx.state !== 'running') await ctx.resume();
+      const src = ctx.createBufferSource();
+      const buffer = ctx.createBuffer(1, 1, ctx.sampleRate);
+      src.buffer = buffer;
+      src.connect(ctx.destination);
+      try { src.start(0); } catch {}
+      setTimeout(() => {
+        try { src.stop(); } catch {}
+        try { src.disconnect(); } catch {}
+      }, 50);
+    } catch (err) {
+      log('unlockAudio', err?.message || err);
+    }
+  }
