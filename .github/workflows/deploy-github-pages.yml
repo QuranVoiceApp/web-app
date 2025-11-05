@@ -118,6 +118,9 @@ jobs:
       - name: Phase 4 playback smoke (pb_polish)
         run: |
           npx playwright test tests/playback.spec.ts --reporter=line --project=chromium --project=ios-wk
+      - name: Phase 4 jitter buffer mock (bursty deltas)
+        run: |
+          npx playwright test tests/jitterbuffer.mock.spec.ts --reporter=line --project=chromium
       - name: bundle phase 4 artifacts
         if: always()
         env:
