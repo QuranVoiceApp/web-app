@@ -29,19 +29,39 @@
       ui_pills: set.has('ui_pills'),
       pb_polish: set.has('pb_polish'),
       sim_input: set.has('sim_input'),
+      smoke: set.has('smoke'),
       diag: set.has('diag') || urlParams.get('diag') === '1',
       telemetry: !set.has('no_telemetry'),
       wake_lock: !set.has('no_wake_lock'),
     };
   })();
+  const flagOn = (key) => {
+    if (!key) return false;
+    const variants = new Set([key, key.replace(/-/g, '_'), key.replace(/_/g, '-')]);
+    for (const variant of variants) {
+      if (variant in FF && FF[variant]) return true;
+      if (ffTokens.includes(variant)) return true;
+    }
+    return false;
+  };
+  try { window.__qvtSwBlocked = !!window.__qvtSwBlocked; } catch {}
+  const FORCE_SIM = FF.sim_input;
   try { window.__qvtFlagTokens = ffTokens.slice(); } catch {}
   const activeFlags = ffTokens.join(',') || 'none';
+  const sendParam = (urlParams.get('send') || '').toLowerCase();
+  // Force json+seq transport for stability across Chrome/iOS
+  const wantsSeqJson = true;
+  const wantsBinary = false;
+  let resolvedSendPath = 'json+seq';
+  let sendMode = resolvedSendPath;
+
   try {
     const existingFlags = (window.__qvtSession && window.__qvtSession.flags) || {};
     const mergedFlags = Object.assign({}, existingFlags, FF);
     window.__qvtSession = Object.assign({}, window.__qvtSession, {
       flags: mergedFlags,
       flagTokens: ffTokens.slice(),
+      sendPath: resolvedSendPath,
     });
   } catch {}
 
@@ -49,16 +69,19 @@
   try {
     window.__qvtSession = window.__qvtSession || {};
     window.__qvtMetrics = window.__qvtMetrics || {};
+    window.__qvtMetrics.traceId = window.__qvtMetrics.traceId || null;
     const playbackDefaults = {
       jitterMs: 0,
       underruns: 0,
       crossfadeCount: 0,
       upsampleMode: 'native',
       dcOffset: 0,
+      recvAudioChunks: 0,
     };
     window.__qvtMetrics.playback = Object.assign({}, playbackDefaults, window.__qvtMetrics.playback || {});
     window.__qvtMetrics.upsampleMode = window.__qvtMetrics.upsampleMode || 'native';
     window.__qvtMetrics.net = Object.assign({ commitWinMs: 100, rttMsEwma: 0 }, window.__qvtMetrics.net || {});
+    window.__qvtMetrics.sendPath = window.__qvtMetrics.sendPath || resolvedSendPath;
     window.__qvtTest = Object.assign(window.__qvtTest || {}, {});
   } catch {}
 
@@ -120,6 +143,8 @@
     }
   };
 
+  const diag = FF.diag || urlParams.get('debug') === 'verbose';
+
   emitVersionBanner();
   log('flags', activeFlags || 'none');
   if (diag) {
@@ -129,9 +154,6 @@
   const isIOS = /iphone|ipad|ipod/.test(uaStr);
   const isSafari = uaStr.includes('safari') && !uaStr.includes('chrome');
   const isMobileSafari = isIOS || (isSafari && uaStr.includes('mobile'));
-  const defaultSend = 'binary';
-  const sendMode = (urlParams.get('send') || defaultSend).toLowerCase(); // 'json' or 'binary'
-  const diag = FF.diag || urlParams.get('debug') === 'verbose';
   const urlMode = (urlParams.get('mode') || '').toLowerCase(); // 'worklet'|'script'
   const urlRaw = urlParams.get('raw') === '1' || urlParams.get('raw') === 'true';
   const urlDeviceLabel = urlParams.get('deviceLabel') || urlParams.get('device') || '';
@@ -147,6 +169,65 @@
   const autoStart = urlParams.get('auto') === '1';
   const canSelectOutput = (typeof HTMLMediaElement !== 'undefined' && HTMLMediaElement.prototype && 'setSinkId' in HTMLMediaElement.prototype) && !isIOS;
   log('sendMode', sendMode);
+  log('sendPath', resolvedSendPath);
+  try { console.info('[qvt:voice] build', resolvedSendPath, { ts: Date.now(), flags: activeFlags }); } catch {}
+
+  const unlockOverlayEl = $('iosUnlock');
+  const unlockButtonEl = $('btnIosUnlock');
+  const swBannerEl = $('swBanner');
+  const swBlocked = !!window.__qvtSwBlocked;
+  let unlockReady = !isIOS;
+  let pendingAutoStart = autoStart && isIOS;
+  const enableConnectButton = () => {
+    const btn = $('btnConnect');
+    if (btn) btn.disabled = false;
+  };
+  const disableConnectButton = () => {
+    const btn = $('btnConnect');
+    if (btn) btn.disabled = true;
+  };
+  const finalizeUnlock = () => {
+    unlockReady = true;
+    enableConnectButton();
+    if (unlockOverlayEl) {
+      unlockOverlayEl.classList.remove('active');
+      unlockOverlayEl.style.display = 'none';
+    }
+    if (pendingAutoStart) {
+      pendingAutoStart = false;
+      try { scheduleAutoStart(); } catch {}
+    }
+    try {
+      const outEl = $('qvtOut');
+      if (outEl) {
+        outEl.muted = false;
+        outEl.volume = 1;
+        const playPromise = outEl.play?.();
+        if (playPromise && typeof playPromise.catch === 'function') playPromise.catch(() => {});
+      }
+    } catch {}
+  };
+  const requestUnlock = async () => {
+    pendingAutoStart = false;
+    try { await unlockIOSAudio(state.playCtx || state.audioContext || null); } catch {}
+    finalizeUnlock();
+    await startConnection();
+  };
+  if (!isIOS && unlockOverlayEl) {
+    unlockOverlayEl.style.display = 'none';
+  } else if (isIOS && unlockOverlayEl && unlockButtonEl) {
+    unlockOverlayEl.classList.add('active');
+    disableConnectButton();
+    unlockButtonEl.addEventListener('click', () => {
+      requestUnlock();
+    }, { once: true });
+  } else if (!isIOS) {
+    enableConnectButton();
+  }
+  if (swBlocked) {
+    if (swBannerEl) swBannerEl.classList.add('active');
+    disableConnectButton();
+  }
   if (diag) log('diag', 'on');
   if (diag && softwareGain !== 1) log('gain', String(softwareGain));
 
@@ -160,6 +241,30 @@
     nzSamples: 0,
     totalSamples: 0,
   };
+  // Strict commit gating counters – do not commit unless ≥5 frames (≈100ms)
+  let framesSinceCommit = 0;
+  let msSinceLastCommit = 0;
+  const IDLE_COMMIT_MS = 1200;
+  const scheduleIdleCommit = (reason = 'timer') => {
+    if (state.idleCommitTimer) {
+      clearTimeout(state.idleCommitTimer);
+      state.idleCommitTimer = null;
+    }
+    state.idleCommitTimer = setTimeout(() => {
+      state.idleCommitTimer = null;
+      if (state.ws && state.ws.readyState === 1) {
+        if (sendAudioCommit(reason)) {
+          log('auto-commit (idle)', reason);
+        }
+      }
+    }, IDLE_COMMIT_MS);
+  };
+  const clearIdleCommit = () => {
+    if (state.idleCommitTimer) {
+      clearTimeout(state.idleCommitTimer);
+      state.idleCommitTimer = null;
+    }
+  };
   // Local inactivity commit helper (speeds up turn-taking on browsers where server VAD may lag)
   function armInactivityCommit() {
     try {
@@ -168,16 +273,13 @@
       state.inactivityTimer = setTimeout(() => {
         try {
           // Only commit if some audio was sent recently and we have ≥commit window buffered
+          if (state.responseActive) { log('commit.skipped responseActive'); return; }
           const ageOk = (Date.now() - (state.lastAudioSentAt||0)) > (commitDelay - 50);
-          const win = commitWindowMs();
-          const durOk = (state.msSinceLastCommit||0) >= win;
-          if (ageOk && durOk && (metrics.sentAppends||0) > 0) {
-            if (sendAudioCommit('inactivity')) {
-              if (!state.responseActive) {
-                state.ws.send(JSON.stringify({ type: 'response.create' }));
-              }
-              log('auto-commit (inactivity)');
-            }
+          const framesOk = framesSinceCommit >= 5;
+          if (ageOk && framesOk && (metrics.sentAppends||0) > 0) {
+            if (sendAudioCommit('inactivity')) log('auto-commit (inactivity)');
+          } else if (!framesOk) {
+            try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
           }
         } catch {}
       }, commitDelay);
@@ -188,11 +290,13 @@
     if (!root) return null;
     return {
       root,
+      send: document.querySelector('[data-testid="pill-send"]'),
       ingress: document.querySelector('[data-testid="pill-ingress"]'),
       rtt: document.querySelector('[data-testid="pill-rtt"]'),
       asr: document.querySelector('[data-testid="pill-asr"]'),
       barge: document.querySelector('[data-testid="pill-barge"]'),
       playback: document.querySelector('[data-testid="pill-playback"]'),
+      storage: document.querySelector('[data-testid="pill-storage"]'),
     };
   })();
 
@@ -201,10 +305,111 @@
     uiPillRefs.root.style.display = on ? 'flex' : 'none';
   };
 
+  const clearResumeAudioTimer = (reason = 'reset') => {
+    const hadTimer = !!state.resumeAudioTimer;
+    if (state.resumeAudioTimer) {
+      clearTimeout(state.resumeAudioTimer);
+      state.resumeAudioTimer = null;
+    }
+    if (state.resumeAudioRetryTimer) {
+      clearTimeout(state.resumeAudioRetryTimer);
+      state.resumeAudioRetryTimer = null;
+    }
+    if (hadTimer && state.resumeAudioOutstanding) {
+      if (reason === 'chunk') {
+        state.resumeAudioCancels = (state.resumeAudioCancels || 0) + 1;
+        try { console.info('[audio] resume guard canceled', { reason }); } catch {}
+      }
+      state.resumeAudioOutstanding = false;
+      syncWatchdogMetrics();
+    } else if (!state.resumeAudioOutstanding) {
+      syncWatchdogMetrics();
+    }
+  };
+
+  const pauseIngress = (ms = 0) => {
+    if (!ms) {
+      state.ingressPauseUntil = 0;
+      try { console.info('[audio] ingress pause cleared'); } catch {}
+      return;
+    }
+    state.ingressPauseUntil = Date.now() + Math.max(0, ms);
+    try { console.info('[audio] ingress paused', { durationMs: ms }); } catch {}
+  };
+
+  const syncWatchdogMetrics = () => {
+    try {
+      window.__qvtMetrics = Object.assign({}, window.__qvtMetrics, {
+        watchdog: {
+          arms: state.resumeAudioArms || 0,
+          cancels: state.resumeAudioCancels || 0,
+          pending: !!state.resumeAudioOutstanding,
+        },
+      });
+    } catch {}
+  };
+
+  const ensureOutputElement = () => {
+    if (!state.outEl) {
+      const el = document.getElementById('qvtOut');
+      if (el) {
+        state.outEl = el;
+        state.sinkEl = el;
+        if (state.sinkDest && el.srcObject !== state.sinkDest.stream) {
+          el.srcObject = state.sinkDest.stream;
+        }
+        el.setAttribute('playsinline', '');
+        el.autoplay = true;
+      }
+    }
+    return state.outEl;
+  };
+
+  const activateOutput = (options = {}) => {
+    const el = ensureOutputElement();
+    if (el) {
+      try { el.muted = false; } catch {}
+      try {
+        const playPromise = el.play();
+        if (playPromise && typeof playPromise.catch === 'function') playPromise.catch(() => {});
+      } catch {}
+      try {
+        console.info('[audio] activateOutput', {
+          paused: el.paused,
+          currentTime: Number.isFinite(el.currentTime) ? Number(el.currentTime.toFixed(3)) : null,
+          resume: !!options.resumeAudio,
+        });
+      } catch {}
+    }
+    const ctx = state.playCtx || state.audioContext;
+    if (ctx) {
+      try { ctx.resume(); } catch {}
+    }
+    if (options.resumeAudio && state.ws && state.ws.readyState === 1) {
+      try { state.ws.send(JSON.stringify({ type: 'response.resume_audio' })); } catch {}
+    }
+    state.audioUnlocked = true;
+    state.audioUnlockPending = false;
+  };
+
   const updateUiPills = () => {
     if (!FF.ui_pills || !uiPillRefs) return;
     setUiPillsVisible(true);
     try {
+      if (uiPillRefs.send) {
+        const path = state.sendPath || resolvedSendPath;
+        const label = state.sendDisplay || `send=${path}`;
+        uiPillRefs.send.textContent = label;
+        try {
+          window.__qvtSession = Object.assign(window.__qvtSession || {}, { sendPath: path, sendDisplay: label });
+          window.__qvtMetrics = Object.assign(window.__qvtMetrics || {}, { sendPath: path, sendDisplay: label });
+        } catch {}
+      }
+      if (uiPillRefs.storage) {
+        const ok = !!state.storageEnabled;
+        uiPillRefs.storage.textContent = ok ? 'storage ok' : 'storage disabled';
+        uiPillRefs.storage.setAttribute('data-state', ok ? 'on' : 'off');
+      }
       if (uiPillRefs.ingress) {
         const val = Number.isFinite(state.ingressRateKbps)
           ? `${Math.max(0, state.ingressRateKbps).toFixed(1)} kb/s`
@@ -212,10 +417,10 @@
         uiPillRefs.ingress.textContent = val;
       }
       if (uiPillRefs.rtt) {
-        const rtt = Number.isFinite(state.net?.rttMsEwma)
-          ? `${Math.round(state.net.rttMsEwma)} ms`
-          : '–';
-        uiPillRefs.rtt.textContent = rtt;
+        const rttVal = Number.isFinite(state.net?.rttMsEwma) ? Math.round(state.net.rttMsEwma) : null;
+        const commitVal = commitWindowMs();
+        const rttText = rttVal == null ? '–' : `${rttVal} ms`;
+        uiPillRefs.rtt.textContent = `${rttText} · commit ${commitVal} ms`;
       }
       if (uiPillRefs.asr) {
         uiPillRefs.asr.textContent = state.partialActive ? 'ASR partial' : 'ASR idle';
@@ -226,14 +431,72 @@
         uiPillRefs.barge.setAttribute('data-state', state.bargeInActive ? 'on' : 'off');
       }
       if (uiPillRefs.playback) {
-        const txt = `${state.playbackUnderruns || 0} underruns`;
+        const chunks = state.recvAudioChunks || metrics.recvAudioChunks || 0;
+        const txt = `${state.playbackUnderruns || 0} underruns · chunks ${chunks}`;
         uiPillRefs.playback.textContent = txt;
       }
     } catch {}
   };
 
+  const getSelectedVoice = () => {
+    const el = $('voice');
+    const value = (el && typeof el.value === 'string') ? el.value.trim() : '';
+    return value || 'verse';
+  };
+
+  const sendResponseCreate = ({ modalities = ['audio'], instructions = '', audioVoice, fallback = false } = {}) => {
+    if (!state.ws || state.ws.readyState !== 1) return false;
+    if (state.responseActive) { try { log('create.skipped active'); } catch {}; return false; }
+    const voice = audioVoice || getSelectedVoice();
+    const payload = {
+      type: 'response.create',
+      response: {
+        modalities,
+        instructions: instructions || 'Please continue.',
+      },
+    };
+    if (modalities.includes('audio')) {
+      payload.response.audio = Object.assign({ voice }, fallback ? { fallback: true } : {});
+    }
+    try {
+      state.ws.send(JSON.stringify(payload));
+      try {
+        console.info('[audio] response.create', { modalities, instructions, voice, fallback });
+      } catch {}
+      return true;
+    } catch (err) {
+      log('response.create error', err?.message || err);
+      return false;
+    }
+  };
+
+  const queueInitialGreeting = () => {
+    if (state.initialGreetingSent || state.initialGreetingTimer || !state.ws || state.ws.readyState !== 1) return;
+    try { console.info('[audio] queueInitialGreeting scheduled'); } catch {}
+    state.initialGreetingTimer = setTimeout(() => {
+      state.initialGreetingTimer = null;
+      if (state.initialGreetingSent || !state.ws || state.ws.readyState !== 1) return;
+      const ok = sendResponseCreate({
+        instructions: 'Provide a short audible greeting and confirm readiness, then pause.',
+      });
+      if (ok) {
+        state.initialGreetingSent = true;
+        try { console.info('[audio] forced response.create', { instructions: 'Provide a short audible greeting and confirm readiness, then pause.', voice: getSelectedVoice() }); } catch {}
+      }
+    }, 250);
+  };
+
+  const resetInitialGreeting = () => {
+    state.initialGreetingSent = false;
+    if (state.initialGreetingTimer) {
+      clearTimeout(state.initialGreetingTimer);
+      state.initialGreetingTimer = null;
+    }
+  };
+
   const renderMetrics = () => {
     const m = $('metrics'); if (!m) return;
+    syncWatchdogMetrics();
     const nzPct = metrics.totalSamples ? Math.round((metrics.nzSamples / metrics.totalSamples) * 100) : 0;
     const rttDisplay = Math.round(state.net.rttMsEwma || 0);
     const winDisplay = commitWindowMs();
@@ -254,6 +517,7 @@
           underruns: state.playbackUnderruns || 0,
           crossfadeCount: state.crossfadeCount || 0,
           upsampleMode: state.upsampleMode || 'native',
+          recvAudioChunks: state.recvAudioChunks || 0,
         };
         window.__qvtMetrics = Object.assign({}, window.__qvtMetrics, {
           commitWindowMs: winDisplay,
@@ -278,13 +542,17 @@
           crossfadeCount: state.crossfadeCount || 0,
           dcOffset: state.dcOffset || 0,
           upsampleMode: state.upsampleMode || 'native',
+          recvAudioChunks: state.recvAudioChunks || 0,
           net: netSnapshot,
           playback: playbackSnapshot,
+          sendPath: state.sendPath,
+          storage: state.storageEnabled ? 'enabled' : 'disabled',
         });
         try {
           window.__qvtSession = Object.assign(window.__qvtSession || {}, {
             net: netSnapshot,
             playback: playbackSnapshot,
+            sendPath: state.sendPath,
           });
         } catch {}
         try { window.__qvtTest._markReady(); } catch {}
@@ -308,6 +576,11 @@
 
   const scheduleAutoStart = () => {
     if (!autoStart || scheduleAutoStart._ran) return;
+    if (window.__qvtSwBlocked) return;
+    if (!unlockReady) {
+      pendingAutoStart = true;
+      return;
+    }
     scheduleAutoStart._ran = true;
     setTimeout(async () => {
       try {
@@ -326,11 +599,11 @@
 
   if (typeof window !== 'undefined') {
     window.addEventListener('DOMContentLoaded', () => {
-      if (autoStart) scheduleAutoStart();
+      if (autoStart && unlockReady) scheduleAutoStart();
     }, { once: true });
   }
 
-  if (autoStart) scheduleAutoStart();
+  if (autoStart && unlockReady) scheduleAutoStart();
 
   const setTtsGain = (value) => {
     try {
@@ -465,6 +738,9 @@
     playCtx: null,
     playCursor: 0,
     serverInHz: 24000,
+    sendPath: resolvedSendPath,
+    sendDisplay: `send=${resolvedSendPath}`,
+    storageEnabled,
     meterEl: null,
     meterFill: null,
     meterText: null,
@@ -476,13 +752,14 @@
     sinkEl: null,
     analyser: null,
     visRaf: null,
-    autoStartMic: true,
+    autoStartMic: autoStart || FORCE_SIM,
     softwareGain,
     agcEnabled: agcEnabledDefault,
     agcGain: 1,
     targetRms: defaultTargetRms,
     gateRms: null, // dynamically set after ambient calibration
     stragglerTimer: null,
+    idleCommitTimer: null,
     net: { rttMsEwma: 80, minCommitMs: 100, maxCommitMs: 150, serverInHz: 24000, audioOutHz: 24000, supportsBargeIn: false },
     _pingTimer: null,
     _lastPing: null,
@@ -504,6 +781,22 @@
     crossfadeCount: 0,
     dcOffset: 0,
     upsampleMode: 'native',
+    recvAudioChunks: 0,
+    audioUnlocked: false,
+    audioUnlockPending: false,
+    ttsStreamDest: null,
+    outEl: null,
+    resumeAudioTimer: null,
+    resumeAudioRetryTimer: null,
+    firstTtsChunkSeen: false,
+    ingressPauseUntil: 0,
+    serverErrorRetrySent: false,
+    serverErrorFallbackSent: false,
+    resumeAudioOutstanding: false,
+    resumeAudioArms: 0,
+    resumeAudioCancels: 0,
+    initialGreetingSent: false,
+    initialGreetingTimer: null,
     wakeLockSentinel: null,
     ingressRateKbps: 0,
     lastIngressSample: null,
@@ -527,9 +820,12 @@
         crossfadeCount: state.crossfadeCount || 0,
         upsampleMode: state.upsampleMode || 'native',
         dcOffset: state.dcOffset || 0,
+        recvAudioChunks: state.recvAudioChunks || 0,
       },
+      sendPath: state.sendPath,
     });
   } catch {}
+  state.storageEnabled = storageEnabled;
 
   const ewma = (prev, value, alpha = 0.2) => (prev == null ? value : (alpha * value) + ((1 - alpha) * prev));
   const commitWindowMs = () => {
@@ -570,10 +866,33 @@
     pill.textContent = ok ? 'Connected' : 'Disconnected';
     pill.className = 'pill ' + (ok ? 'ok' : 'err');
     $('btnMic').disabled = !ok;
+    const btnConnect = $('btnConnect');
+    if (btnConnect) {
+      if (ok) {
+        btnConnect.textContent = 'Disconnect';
+        btnConnect.classList.remove('btn-brand');
+        btnConnect.classList.add('btn-danger');
+        btnConnect.dataset.state = 'connected';
+        btnConnect.setAttribute('aria-pressed', 'true');
+      } else {
+        btnConnect.textContent = 'Connect';
+        btnConnect.classList.add('btn-brand');
+        btnConnect.classList.remove('btn-danger');
+        btnConnect.dataset.state = 'disconnected';
+        btnConnect.setAttribute('aria-pressed', 'false');
+        if (window.__qvtSwBlocked) {
+          btnConnect.disabled = true;
+        }
+      }
+    }
   };
 
   async function connect() {
     if (state.ws) return;
+    if (window.__qvtSwBlocked) {
+      log('sw.blocked', 'Skipped connect while service worker controller is active');
+      return;
+    }
     try {
       log('Connecting to', wsUrl);
       if (diag) {
@@ -597,10 +916,36 @@
 
       ws.onopen = () => {
         state.ws = ws;
+        const rawSend = ws.send.bind(ws);
+        ws.send = (payload) => {
+          try {
+            const tag = (payload instanceof ArrayBuffer || ArrayBuffer.isView?.(payload)) ? 'arraybuffer' : typeof payload;
+            const length = typeof payload === 'string' ? payload.length : (payload && typeof payload === 'object' && 'byteLength' in payload ? payload.byteLength : ArrayBuffer.isView?.(payload) ? payload.byteLength : 0);
+            console.info('[wire]', tag, length);
+          } catch {}
+          return rawSend(payload);
+        };
+        window.wsSend = (payload) => {
+          if (!state.ws || state.ws.readyState !== 1) return false;
+          try {
+            const outbound = typeof payload === 'string' ? payload : JSON.stringify(payload);
+            state.ws.send(outbound);
+            return true;
+          } catch (err) {
+            log('wsSend error', err?.message || err);
+            return false;
+          }
+        };
         state.connected = true;
         setConn(true);
         log('WebSocket open');
         startDiagPinger();
+        state.sendDisplay = `send=${state.sendPath}`;
+        state.serverErrorRetrySent = false;
+        state.serverErrorFallbackSent = false;
+        state.firstTtsChunkSeen = false;
+        pauseIngress(0);
+        resetInitialGreeting();
         if (FF.ui_pills) {
           try {
             state.commitWinMs = commitWindowMs();
@@ -608,29 +953,41 @@
           } catch {}
         }
         try { state.playCtx?.resume(); } catch {}
+        metrics.recvAudioChunks = 0;
+        state.recvAudioChunks = 0;
         // Send client state only when diagnostics enabled
         if (FF.diag) {
           try {
             const ver = (document.currentScript && document.currentScript.src) || 'qvt-web';
-            ws.send(JSON.stringify({ type: 'client.state', client: { app_version: 'web-' + new Date().toISOString(), platform: navigator.userAgent, read_mode: false, capabilities: { binary_send_ok: (sendMode === 'binary'), barge_in_supported: true, mobile: isMobileSafari } } }));
+            ws.send(JSON.stringify({ type: 'client.state', client: { app_version: 'web-' + new Date().toISOString(), platform: navigator.userAgent, read_mode: false, capabilities: { binary_send_ok: (resolvedSendPath === 'binary'), barge_in_supported: true, mobile: isMobileSafari } } }));
           } catch {}
         }
-        // Initialize playback context
+        // Initialize playback context/output chain
         if (!state.playCtx) {
           state.playCtx = new (window.AudioContext || window.webkitAudioContext)();
           state.playCursor = state.playCtx.currentTime;
         }
-        // Prepare output sink if supported
-        if (state.outputSupported) {
-          if (!state.sinkDest) state.sinkDest = new MediaStreamAudioDestinationNode(state.playCtx);
-          if (!state.sinkEl) {
-            const el = new Audio(); el.autoplay = true; el.muted = false; el.srcObject = state.sinkDest.stream; el.playsInline = true; el.setAttribute('playsinline', '');
-            state.sinkEl = el;
+        if (!state.sinkDest) {
+          state.sinkDest = new MediaStreamAudioDestinationNode(state.playCtx);
+        }
+        const outEl = state.outEl || document.getElementById('qvtOut');
+        if (outEl && outEl.srcObject !== state.sinkDest.stream) {
+          outEl.srcObject = state.sinkDest.stream;
+        }
+        if (outEl) {
+          outEl.setAttribute('playsinline', '');
+          outEl.autoplay = true;
+          if (!state.audioUnlocked) outEl.muted = true;
+          state.outEl = outEl;
+          state.sinkEl = outEl;
+          if (state.outputSupported && state.speakerId && typeof outEl.setSinkId === 'function') {
+            outEl.setSinkId(state.speakerId).then(() => log('speaker set', state.speakerId)).catch(()=>{});
           }
-          if (state.speakerId) {
-            state.sinkEl.setSinkId(state.speakerId).then(() => log('speaker set', state.speakerId)).catch(()=>{});
-          }
-          try { state.sinkEl.play?.(); } catch {}
+          try { outEl.play?.(); } catch {}
+        }
+        if (state.audioUnlockPending || (isIOS && !state.audioUnlocked)) {
+          state.audioUnlockPending = true;
+          unlockIOSAudio(state.playCtx);
         }
         // Prepare jitter buffer for TTS playback (smooths network jitter)
         try {
@@ -821,16 +1178,22 @@
               }
             }
           }
-          const dest = (state.outputSupported && state.sinkDest) ? state.sinkDest : state.playCtx.destination;
+          const dest = state.sinkDest || state.playCtx.destination;
           state.playbackUnderruns = 0;
           state.crossfadeCount = 0;
           state.dcOffset = 0;
           state.upsampleMode = 'native';
+          state.recvAudioChunks = metrics.recvAudioChunks || 0;
+          const iosPolish = FF.pb_polish && isIOS;
+          const jbStart = FF.pb_polish ? (iosPolish ? 135 : 100) : 80;
+          const jbLow = FF.pb_polish ? (iosPolish ? 110 : 70) : 60;
+          const jbHigh = FF.pb_polish ? (iosPolish ? 280 : 220) : 180;
+          const jbCrossfade = FF.pb_polish ? (iosPolish ? 8 : 5) : 0;
           const jbOpts = {
-            startMs: FF.pb_polish ? 100 : 80,
-            lowMs: FF.pb_polish ? 70 : 60,
-            highMs: FF.pb_polish ? 220 : 180,
-            crossfadeMs: FF.pb_polish ? 5 : 0,
+            startMs: jbStart,
+            lowMs: jbLow,
+            highMs: jbHigh,
+            crossfadeMs: jbCrossfade,
             dcAlpha: 0.995,
             pbPolish: !!FF.pb_polish,
             onMetrics: (info) => {
@@ -840,31 +1203,59 @@
               state.crossfadeCount = info.crossfadeCount || 0;
               state.dcOffset = Number.isFinite(info.dcOffset) ? info.dcOffset : 0;
               state.upsampleMode = info.upsampleMode || state.upsampleMode;
+              state.recvAudioChunks = metrics.recvAudioChunks || state.recvAudioChunks || 0;
               if (Number.isFinite(info.aheadSec) && state.playCtx) {
                 state.playCursor = state.playCtx.currentTime + info.aheadSec;
               }
               if (FF.pb_polish && (FF.diag || state.playbackUnderruns > 0)) {
                 try { renderMetrics(); } catch {}
               }
+              if (FF.ui_pills) updateUiPills();
             },
           };
           state.ttsJB = new TtsJitterBuffer(state.playCtx, dest, jbOpts);
           state.ttsGainNode = state.ttsJB.gain;
+          if (!state.outEl && dest !== state.playCtx.destination) {
+            try { state.ttsJB.gain.connect(state.playCtx.destination); } catch {}
+          }
         } catch {}
         // Update session with desired voice and (best-effort) VAD threshold
-        const threshold = parseFloat($('vadThresh').value || '0.7');
+        const rawThreshold = parseFloat($('vadThresh').value || '0.6');
+        const threshold = Number.isFinite(rawThreshold) ? rawThreshold : 0.6;
+        const turnDetectionPayload = {
+          type: 'server_vad',
+          threshold,
+          prefix_ms: 200,
+          silence_ms: 350,
+        };
+        const voiceChoice = getSelectedVoice();
         const sessionUpdate = {
           type: 'session.update',
           session: {
-            voice: $('voice').value,
-            // Best-effort hints; server may accept either
-            turn_detection: { type: 'server_vad', threshold },
+            voice: voiceChoice,
+            turn_detection: turnDetectionPayload,
+            input_audio_format: { type: 'pcm16', channels: 1, sample_rate: 24000 },
+            output_audio_format: { type: 'pcm16', channels: 1, sample_rate: 24000 },
           }
         };
         try {
-          ws.send(JSON.stringify(sessionUpdate));
+          window.wsSend?.(sessionUpdate) || ws.send(JSON.stringify(sessionUpdate));
           try { log('=> session.update keys', Object.keys(sessionUpdate.session).join(',')); } catch {}
         } catch {}
+        try {
+          const wantSmoke = FF.smoke || (urlParams.get('smoke') === '1');
+          if (wantSmoke) {
+            const greetingSent = sendResponseCreate({
+              modalities: ['audio'],
+              instructions: 'Hello! This is an audio check.',
+              metadata: { kind: 'smoke' },
+            });
+            if (greetingSent) state.initialGreetingSent = true;
+          }
+        } catch (err) {
+          if (diag) log('initial greeting error', err?.message || err);
+        }
+        window.__qvtSession.sendPath = resolvedSendPath;
 
         // Prepare/select devices after connection
         initDevices().then(async () => {
@@ -903,6 +1294,9 @@
               const f32 = new Float32Array(i16.length);
               for (let i=0;i<i16.length;i++) f32[i] = Math.max(-1, i16[i] / 32768);
               try { metrics.recvAudioChunks += 1; metrics.recvAudioBytes += i16.byteLength; renderMetrics(); if (diag) log('delta(binary)', String(i16.byteLength)); } catch {}
+              state.recvAudioChunks = metrics.recvAudioChunks;
+              try { window.__qvtMetrics.recvAudioChunks = metrics.recvAudioChunks; } catch {}
+              try { console.info('[audio] enqueue delta', { recvAudioChunks: state.recvAudioChunks, transport: 'binary' }); } catch {}
               enqueuePlayback(f32, state.serverInHz || 24000);
             }
           } catch (e) { log('audio.binary.error', String(e)); }
@@ -916,6 +1310,8 @@
           if (state.micActive) stopMic();
           if (state._pingTimer) { clearInterval(state._pingTimer); state._pingTimer = null; }
           state._lastPing = null;
+          clearResumeAudioTimer('reset');
+          clearIdleCommit();
           if (state.ttsJB && typeof state.ttsJB.reset === 'function') {
             try { state.ttsJB.reset(); } catch {}
           }
@@ -927,12 +1323,35 @@
           state.crossfadeCount = 0;
           state.dcOffset = 0;
           state.upsampleMode = 'native';
+          state.recvAudioChunks = 0;
+          if (state.outEl) {
+            try { state.outEl.muted = true; } catch {}
+            try { state.outEl.srcObject = null; } catch {}
+          }
+          state.sinkDest = null;
+          state.audioUnlocked = false;
+          state.audioUnlockPending = false;
+          resetInitialGreeting();
         }
       };
     } catch (e) {
       log('Connect failed', e.message || e);
     }
   }
+
+  const startConnection = async () => {
+    if (window.__qvtSwBlocked) {
+      log('sw.blocked', 'Active service worker detected; please reload');
+      return;
+    }
+    if (!unlockReady) {
+      if (unlockOverlayEl) unlockOverlayEl.classList.add('active');
+      return;
+    }
+    if (state.connected || (state.ws && state.ws.readyState === 1)) return;
+    try { await unlockIOSAudio(state.playCtx || state.audioContext || null); } catch {}
+    await connect();
+  };
 
   function appendTranscript(text, isFinal) {
     const el = $('transcript'); if (!el) return;
@@ -961,13 +1380,20 @@
   function enqueuePlayback(f32, sr) {
     if (!state.playCtx) return;
     try {
+      state.recvAudioChunks = metrics.recvAudioChunks || state.recvAudioChunks || 0;
+      clearResumeAudioTimer('chunk');
+      if (state.audioUnlockPending || (isIOS && !state.audioUnlocked)) {
+        unlockIOSAudio(state.playCtx);
+      }
       // If jitter buffer exists, push to it; else fall back to direct scheduling
       if (state.ttsJB && typeof state.ttsJB.pushChunk === 'function') {
         state.ttsJB.pushChunk(f32, sr);
+        if (FF.ui_pills) updateUiPills();
         return;
       }
       if (state.ttsJB && typeof state.ttsJB.pushFloat32Mono24k === 'function' && sr === 24000) {
         state.ttsJB.pushFloat32Mono24k(f32);
+        if (FF.ui_pills) updateUiPills();
         return;
       }
       const buf = state.playCtx.createBuffer(1, f32.length, sr);
@@ -981,17 +1407,29 @@
       state.playCursor = when + buf.duration;
       const aheadSec = Math.max(0, state.playCursor - state.playCtx.currentTime);
       state.jitterMs = Math.round(aheadSec * 1000);
+      if (FF.ui_pills) updateUiPills();
     } catch (e) { log('playback error', e.message || e); }
   }
 
   function handleServerEvent(msg, raw) {
     const rawType = msg.type || '';
     const t = normalizeEventType(rawType);
+    msg.type = t;
+    if (rawType !== t) {
+      try { console.info('[event] normalized', { raw: rawType, type: t }); } catch {}
+    }
+    const traceId = msg.trace_id || msg.traceId;
+    if (traceId) {
+      state.traceId = traceId;
+      try { window.__qvtSession = Object.assign(window.__qvtSession || {}, { traceId }); } catch {}
+      try { window.__qvtMetrics = Object.assign(window.__qvtMetrics || {}, { traceId }); } catch {}
+    }
     // Handle new output audio delta family (when modalities include audio+text)
     if (t === 'response.output_audio.delta') {
       try {
         const b64 = msg.delta || msg.audio || msg.bytes || msg.data || '';
         if (typeof b64 === 'string' && b64.length) {
+          if (!state.responseActive) { state.responseActive = true; try { log('response.begin'); } catch {} }
           const bin = atob(b64);
           const i16 = new Int16Array(bin.length / 2);
           for (let i = 0; i < i16.length; i++) {
@@ -1001,6 +1439,26 @@
           const f32 = new Float32Array(i16.length);
           for (let i=0;i<i16.length;i++) f32[i] = Math.max(-1, i16[i] / 32768);
           try { metrics.recvAudioChunks += 1; metrics.recvAudioBytes += i16.byteLength; renderMetrics(); if (diag) log('delta(output_audio)', String(b64.length)); } catch {}
+          state.recvAudioChunks = metrics.recvAudioChunks;
+          try { window.__qvtMetrics.recvAudioChunks = metrics.recvAudioChunks; } catch {}
+          try { console.info('[audio] enqueue delta', { recvAudioChunks: state.recvAudioChunks }); } catch {}
+          if (!state.firstTtsChunkSeen) {
+            state.firstTtsChunkSeen = true;
+            activateOutput();
+            try {
+              const el = ensureOutputElement();
+              console.info('[audio] first chunk seen', {
+                paused: !!(el && el.paused),
+                currentTime: el ? Number(el.currentTime.toFixed(3)) : null,
+              });
+            } catch {}
+          } else {
+            activateOutput();
+          }
+          state.sendDisplay = `send=${state.sendPath}`;
+          state.serverErrorRetrySent = false;
+          state.serverErrorFallbackSent = false;
+          pauseIngress(0);
           enqueuePlayback(f32, msg.sample_rate_hz || 24000);
         }
       } catch (e) { log('audio.decode.error', String(e)); }
@@ -1021,11 +1479,13 @@
         try { window.__qvtSession.lastType = 'session.started'; } catch {}
         startDiagPinger();
         if (FF.ui_pills) updateUiPills();
+        if (FF.smoke) queueInitialGreeting();
         break;
       }
       case 'session.audio_status':
         if (msg.input_sample_rate_hz) state.serverInHz = msg.input_sample_rate_hz;
         log('<= audio_status', `in=${msg.input_sample_rate_hz} out=${msg.output_sample_rate_hz}`);
+        if (FF.smoke) queueInitialGreeting();
         break;
       case 'personalized_greeting':
         log('<= greeting', JSON.stringify(msg).slice(0, 160));
@@ -1033,6 +1493,48 @@
       case 'error':
         log('<= ERROR', JSON.stringify(msg).slice(0, 200));
         break;
+      case 'server.error@v1': {
+        const cause = msg.cause || (msg.error && (msg.error.code || msg.error.type)) || 'upstream';
+        const errCode = (msg.error && (msg.error.code || msg.error.type)) || msg.upstream_cause || cause;
+        state.sendDisplay = `ERR:${errCode}`;
+        pauseIngress(1000);
+        updateUiPills();
+        try {
+          console.info('[audio] server.error', {
+            cause,
+            upstreamCause: msg.upstream_cause || msg.upstreamCause,
+            traceId: msg.trace_id || msg.traceId,
+            detail: msg.error,
+          });
+        } catch {}
+        clearResumeAudioTimer('reset');
+        state.resumeAudioOutstanding = false;
+        syncWatchdogMetrics();
+        const voiceChoice = getSelectedVoice();
+        if (!state.serverErrorRetrySent) {
+          state.serverErrorRetrySent = true;
+          const sent = sendResponseCreate({
+            instructions: 'Encountered an upstream error. Please try responding again audibly.',
+            audioVoice: voiceChoice,
+          });
+          if (sent) state.initialGreetingSent = true;
+        } else if (!state.serverErrorFallbackSent) {
+          state.serverErrorFallbackSent = true;
+          sendResponseCreate({
+            modalities: ['text'],
+            instructions: '(Fallback) Please confirm you can hear me.',
+            fallback: true,
+          });
+        }
+        break;
+      }
+      case 'ingress.commit_deferred':
+      case 'ingress.commit_deferred@v1': {
+        const need = msg.needed_bytes || msg.neededBytes;
+        const have = msg.have_bytes || msg.haveBytes;
+        try { log('commit.deferred', `need=${need} have=${have}`); } catch {}
+        break;
+      }
       case 'response.created':
         $('transcript').textContent = '';
         state.responseActive = true;
@@ -1061,18 +1563,80 @@
         state.responseActive = true;
         state.partialActive = true;
         if (FF.ui_pills) updateUiPills();
+        state.firstTtsChunkSeen = false;
+        clearResumeAudioTimer('reset');
+        if (FF.pb_polish) {
+          const baselineChunks = state.recvAudioChunks || metrics.recvAudioChunks || 0;
+          state.resumeAudioOutstanding = true;
+          state.resumeAudioArms = (state.resumeAudioArms || 0) + 1;
+          syncWatchdogMetrics();
+          try { console.info('[audio] resume guard armed', { baselineChunks }); } catch {}
+          state.resumeAudioTimer = setTimeout(() => {
+            try {
+              const currentChunks = state.recvAudioChunks || metrics.recvAudioChunks || 0;
+              if (currentChunks <= baselineChunks && state.ws?.readyState === 1) {
+                state.ws.send(JSON.stringify({ type: 'response.resume_audio' }));
+                log('=> response.resume_audio (auto)');
+                activateOutput({ resumeAudio: true });
+                try {
+                  const el = ensureOutputElement();
+                  console.info('[audio] resume guard fired', {
+                    baselineChunks,
+                    currentChunks,
+                    paused: !!(el && el.paused),
+                  });
+                } catch {}
+                if (!state.resumeAudioRetryTimer) {
+                  state.resumeAudioRetryTimer = setTimeout(() => {
+                    try {
+                      const latestChunks = state.recvAudioChunks || metrics.recvAudioChunks || 0;
+                      if (state.ws?.readyState === 1 && latestChunks <= baselineChunks) {
+                        sendResponseCreate({
+                          modalities: ['audio'],
+                          instructions: 'Please continue audibly.',
+                          metadata: { kind: 'resume-retry' },
+                        });
+                      }
+                    } catch {}
+                    state.resumeAudioRetryTimer = null;
+                  }, 1500);
+                }
+              }
+            } catch {}
+            state.resumeAudioTimer = null;
+            state.resumeAudioOutstanding = false;
+            syncWatchdogMetrics();
+          }, 750);
+        }
         break;
       case 'response.output_item.done':
         state.responseActive = false;
         state.partialActive = false;
+        clearResumeAudioTimer('reset');
         updateUiPills();
         break;
       case 'response.audio.delta': {
         // Support multiple possible payload keys
         const b64 = msg.delta || msg.audio || msg.data || msg.chunk || msg.output_audio_chunk;
+        if (state.outEl && state.audioUnlocked) {
+          try { state.outEl.muted = false; } catch {}
+        }
         if (b64 && typeof b64 === 'string') {
           const { f32 } = base64ToFloat32(b64, msg.sample_rate_hz || 24000);
           metrics.recvAudioChunks += 1; metrics.recvAudioBytes += (b64.length * 3) / 4; renderMetrics();
+          state.recvAudioChunks = metrics.recvAudioChunks;
+          try { window.__qvtMetrics.recvAudioChunks = metrics.recvAudioChunks; } catch {}
+          try { console.info('[audio] enqueue delta', { recvAudioChunks: state.recvAudioChunks, transport: 'json' }); } catch {}
+          if (!state.firstTtsChunkSeen) {
+            state.firstTtsChunkSeen = true;
+            activateOutput();
+          } else {
+            activateOutput();
+          }
+          state.sendDisplay = `send=${state.sendPath}`;
+          state.serverErrorRetrySent = false;
+          state.serverErrorFallbackSent = false;
+          pauseIngress(0);
           enqueuePlayback(f32, msg.sample_rate_hz || 24000);
         }
         break;
@@ -1103,6 +1667,15 @@
             } catch {}
           }
           try {
+            window.__qvtMetrics = Object.assign({}, window.__qvtMetrics, {
+              ingress: { chunks: ia.chunks || 0, bytes: ia.bytes || 0, ts: ia.last_ts || Date.now() },
+              egress: { recvAudioChunks: state.recvAudioChunks || 0 },
+            });
+            window.__qvtSession = Object.assign({}, window.__qvtSession || {}, {
+              ingress: { chunks: ia.chunks || 0, bytes: ia.bytes || 0, ts: ia.last_ts || Date.now() },
+            });
+          } catch {}
+          try {
             const pill = $('ingress-pill');
             if (pill) {
               const kb = Math.round((ia.bytes || 0) / 1024);
@@ -1110,6 +1683,13 @@
             }
           } catch {}
           updateUiPills();
+          try {
+            console.info('[ingress] session.update', {
+              chunks: ia.chunks || 0,
+              bytes: ia.bytes || 0,
+              recvAudioChunks: state.recvAudioChunks || 0,
+            });
+          } catch {}
         }
         if (FF.ui_pills) updateUiPills();
         break;
@@ -1117,16 +1697,18 @@
       case 'response.audio.done':
       case 'response.output_audio.done':
       case 'response.done':
-        log('<=', t);
+        log('response.end');
         try { if (state.ttsGainNode) state.ttsGainNode.gain.value = 1.0; } catch {}
         state.responseActive = false;
         state.partialActive = false;
+        clearResumeAudioTimer('reset');
         updateUiPills();
         break;
       case 'response.cancelled':
       case 'response.canceled':
         state.responseActive = false;
         state.partialActive = false;
+        clearResumeAudioTimer('reset');
         updateUiPills();
         try { if (state.ttsGainNode) state.ttsGainNode.gain.value = 1.0; } catch {}
         break;
@@ -1135,8 +1717,10 @@
       case 'response.cancel':
         log('<=', t);
         try { if (state.ttsGainNode) state.ttsGainNode.gain.value = 1.0; } catch {}
+        clearResumeAudioTimer('reset');
         break;
       case 'session.no_audio_ingress':
+      case 'session.no_audio_ingress@v1':
         log('<= no_audio_ingress', JSON.stringify(msg));
         state.eventCounts = state.eventCounts || {}; state.eventCounts['no_audio_ingress'] = (state.eventCounts['no_audio_ingress']||0)+1;
         break;
@@ -1158,22 +1742,20 @@
             setTtsGain(1.0);
           }
         }
-        // Optional auto-commit flow on silence
+        // Optional auto-commit flow on silence (gated by ≥5 frames)
         if (t === 'input_audio_buffer.speech_ended' && $('autoCommit')?.checked) {
-          try {
-            if ((state.msSinceLastCommit||0) >= commitWindowMs()) {
-              if (sendAudioCommit('inactivity')) {
-                if (!state.responseActive) {
-                  state.ws.send(JSON.stringify({ type: 'response.create' }));
-                }
-              }
-            }
-          } catch {}
+          try { if (sendAudioCommit('inactivity')) log('auto-commit (speech_ended)'); } catch {}
         }
         break;
       case 'input_audio_buffer.committed':
-        try { state.msSinceLastCommit = 0; } catch {}
+        // No-op: counters reset on our own commit helper
         break;
+      case 'input_audio_buffer.cleared': {
+        // Reset commit gating counters when server clears buffer
+        framesSinceCommit = 0;
+        msSinceLastCommit = 0;
+        break;
+      }
       default:
         // Keep concise, but log unknown types (more verbose in diag)
         if (rawType) {
@@ -1192,12 +1774,17 @@
     return out.buffer;
   }
 
-  // Very simple 48kHz -> 24kHz downsampler (decimate by 2). For production, use a proper low-pass filter.
+  // Lightweight smoothing decimator (48k -> 24k) tuned for speech.
   function downsample48kTo24k(float32) {
     const ratio = 2;
     const len = Math.floor(float32.length / ratio);
     const out = new Float32Array(len);
-    for (let i = 0, j = 0; i < len; i++, j += ratio) out[i] = float32[j];
+    let prev = 0;
+    for (let i = 0, j = 0; i < len; i++, j += ratio) {
+      const current = float32[j];
+      out[i] = (0.25 * prev) + (0.75 * current);
+      prev = current;
+    }
     return out;
   }
 
@@ -1272,44 +1859,50 @@
   function sendTailPad() {
     if (!FF.barge_in || !state.tailPadNeeded) return;
     if (!state.ws || state.ws.readyState !== 1) return;
+    if (state.ingressPauseUntil && Date.now() < state.ingressPauseUntil) return;
     const hz = state.serverInHz || 24000;
     const durationMs = 50;
     const samples = Math.max(1, Math.round(hz * (durationMs / 1000)));
     const silence = new Float32Array(samples);
     const pcmBuf = float32ToPCM16(silence);
     try {
-      if (FF.seq_json) {
-        state._seq = (state._seq || 0) + 1;
-        state.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', seq: state._seq, base64: arrayBufferToBase64(pcmBuf) }));
-      } else if (sendMode === 'binary') {
-        state.ws.send(pcmBuf);
-      } else {
-        state.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: arrayBufferToBase64(pcmBuf) }));
+      if (sendAudioFrameBuffer(pcmBuf)) {
+        metrics.sentAppends += 1;
+        metrics.sentBytesAudio += pcmBuf.byteLength;
+        state.lastAudioSentAt = Date.now();
+        renderMetrics();
       }
-      metrics.sentAppends += 1;
-      metrics.sentBytesAudio += pcmBuf.byteLength;
-      state.lastAudioSentAt = Date.now();
-      renderMetrics();
     } catch {}
   }
 
   function sendAudioCommit(reason = 'auto') {
     if (!state.ws || state.ws.readyState !== 1) return false;
+    clearIdleCommit();
+    // Block commits while a response is actively speaking (no barge-in by default)
+    if (state.responseActive) {
+      try { log('commit.skipped responseActive'); } catch {}
+      return false;
+    }
+    // Enforce ≥100ms of buffered audio (≥5 frames of 20ms)
+    if (framesSinceCommit < 5 || msSinceLastCommit < 100) {
+      try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
+      return false;
+    }
     if (FF.barge_in && state.tailPadNeeded) {
       sendTailPad();
       state.tailPadNeeded = false;
     }
     try {
       state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
-      state.msSinceLastCommit = 0;
+      // Reset gating counters
+      framesSinceCommit = 0;
+      msSinceLastCommit = 0;
+      state.appendsSinceCommit = 0;
       state.lastCommitReason = reason;
       if (FF.barge_in) {
         clearBargeResumeTimer();
-        if (state.bargeInActive) {
-          resumeBarge('cancel');
-        } else {
-          setTtsGain(1.0);
-        }
+        // Resume TTS after commit rather than cancel unless user explicitly stops
+        if (state.bargeInActive) resumeBarge('resume'); else setTtsGain(1.0);
         state.tailPadNeeded = false;
       }
       return true;
@@ -1323,6 +1916,35 @@
     let bin = '';
     for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
     return btoa(bin);
+  }
+
+  function sendAudioFrameBuffer(pcmBuf) {
+    if (!state.ws || state.ws.readyState !== 1) return false;
+    try {
+      if (resolvedSendPath === 'json+seq' || resolvedSendPath === 'json') {
+        state.ws.send(JSON.stringify({
+          type: 'input_audio_buffer.append',
+          audio: arrayBufferToBase64(pcmBuf),
+        }));
+      } else {
+        state.ws.send(pcmBuf);
+      }
+      state.sendPath = resolvedSendPath;
+      state.sendDisplay = `send=${resolvedSendPath}`;
+      try {
+        window.__qvtMetrics = Object.assign(window.__qvtMetrics || {}, { sendPath: resolvedSendPath });
+        window.__qvtSession = Object.assign(window.__qvtSession || {}, { sendPath: resolvedSendPath });
+      } catch {}
+      scheduleIdleCommit('frame');
+      // Each append is one 20ms frame at 24k; track commit gating
+      framesSinceCommit += 1;
+      msSinceLastCommit += 20;
+      state.appendsSinceCommit = (state.appendsSinceCommit || 0) + 1;
+      return true;
+    } catch (err) {
+      log('sendAudioFrame error', err?.message || err);
+      return false;
+    }
   }
 
   async function configureCapture(ctx, source, opts = {}) {
@@ -1425,30 +2047,24 @@
         }
 
         const pcmBuf = float32ToPCM16(chunk);
+        if (state.ingressPauseUntil && Date.now() < state.ingressPauseUntil) {
+          continue;
+        }
         if (state.ws && state.ws.readyState === 1) {
           try {
             const ba = state.ws.bufferedAmount || 0;
             if (ba > MAX_BUFFERED * 4) { if (diag) log('backpressure drop', String(ba)); continue; }
-            if (FF.seq_json) {
-              const b64 = arrayBufferToBase64(pcmBuf);
-              state._seq = (state._seq || 0) + 1;
-              state.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', seq: state._seq, base64: b64 }));
-            } else if (sendMode === 'binary') {
-              state.ws.send(pcmBuf);
-            } else {
-              const b64 = arrayBufferToBase64(pcmBuf);
-              state.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: b64 }));
-            }
-            metrics.sentAppends += 1;
-            metrics.sentBytesAudio += pcmBuf.byteLength;
-            state.lastAudioSentAt = Date.now();
-            renderMetrics();
-            state.msSinceLastCommit = (state.msSinceLastCommit || 0) + Math.round((chunk.length / (state.serverInHz || 24000)) * 1000);
-            if (metrics.sentAppends <= 3 || metrics.sentAppends % 50 === 0) {
-              let peak = 0, sum = 0;
-              for (let i = 0; i < chunk.length; i++) { const a = Math.abs(chunk[i]); peak = Math.max(peak, a); sum += a * a; }
-              const rms = Math.sqrt(sum / Math.max(1, chunk.length));
-              log('=> audio', `mode=${sendMode} bytes=${pcmBuf.byteLength} peak=${peak.toFixed(2)} rms=${rms.toFixed(2)} buffered=${state.ws.bufferedAmount}`);
+            if (sendAudioFrameBuffer(pcmBuf)) {
+              metrics.sentAppends += 1;
+              metrics.sentBytesAudio += pcmBuf.byteLength;
+              state.lastAudioSentAt = Date.now();
+              renderMetrics();
+              if (metrics.sentAppends <= 3 || metrics.sentAppends % 50 === 0) {
+                let peak = 0, sum = 0;
+                for (let i = 0; i < chunk.length; i++) { const a = Math.abs(chunk[i]); peak = Math.max(peak, a); sum += a * a; }
+                const rms = Math.sqrt(sum / Math.max(1, chunk.length));
+                log('=> audio', `mode=${resolvedSendPath} bytes=${pcmBuf.byteLength} peak=${peak.toFixed(2)} rms=${rms.toFixed(2)} buffered=${state.ws.bufferedAmount}`);
+              }
             }
           } catch {}
         }
@@ -1457,13 +2073,10 @@
         try { if (state.stragglerTimer) clearTimeout(state.stragglerTimer); } catch {}
         state.stragglerTimer = setTimeout(() => {
           try {
-            if ((state.msSinceLastCommit || 0) >= commitWindowMs()) {
-              if (sendAudioCommit('straggler')) {
-                if (!state.responseActive) {
-                  state.ws.send(JSON.stringify({ type: 'response.create' }));
-                }
-                log('auto-commit (straggler flush)');
-              }
+            if (framesSinceCommit >= 5) {
+              if (sendAudioCommit('straggler')) log('auto-commit (straggler flush)');
+            } else {
+              try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
             }
           } catch {}
         }, 30);
@@ -1518,24 +2131,21 @@
                   }
                 } catch {}
               }
+              if (state.ingressPauseUntil && Date.now() < state.ingressPauseUntil) {
+                flushTimer = null;
+                return;
+              }
               const pcmBuf = float32ToPCM16(chunk);
               if (state.ws && state.ws.readyState === 1) {
                 try {
                   const ba = state.ws.bufferedAmount || 0;
                   if (ba > MAX_BUFFERED * 4) { if (diag) log('backpressure drop', String(ba)); flushTimer = null; return; }
-                  if (FF.seq_json) {
-                    const b64 = arrayBufferToBase64(pcmBuf);
-                    state._seq = (state._seq || 0) + 1;
-                    state.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', seq: state._seq, base64: b64 }));
-                  } else if (sendMode === 'binary') {
-                    state.ws.send(pcmBuf);
-                  } else {
-                    state.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: arrayBufferToBase64(pcmBuf) }));
+                  if (sendAudioFrameBuffer(pcmBuf)) {
+                    metrics.sentAppends += 1;
+                    metrics.sentBytesAudio += pcmBuf.byteLength;
+                    state.lastAudioSentAt = Date.now();
+                    renderMetrics();
                   }
-                  metrics.sentAppends += 1;
-                  metrics.sentBytesAudio += pcmBuf.byteLength;
-                  state.lastAudioSentAt = Date.now();
-                  renderMetrics();
                   flushTimer = null;
                 } catch {}
               }
@@ -1830,7 +2440,7 @@
             const summary = {
               t: new Date().toISOString(),
               capture: (document.getElementById('captureMode') || { value: 'worklet' }).value || 'worklet',
-              send: sendMode,
+              send: state.sendPath,
               ctx: ctx.state,
               micActive: state.micActive,
               deviceId: (state.deviceId || 'default'),
@@ -1843,6 +2453,7 @@
               ingressChunks: ingress.chunks,
               ingressBytes: ingress.bytes,
               ws: wsState,
+              recvAudioChunks: state.recvAudioChunks || 0,
               events: state.eventCounts || {},
               driftPpm: FF.drift_comp ? Number((state.driftPpm || 0).toFixed(1)) : undefined,
               workletStalls: state.workletStalls || 0,
@@ -1863,10 +2474,10 @@
     if (diag) {
       try {
         if (state._diagTimer) clearInterval(state._diagTimer);
-        const interval = FF.sim_input ? 500 : 1000;
+        const interval = FORCE_SIM ? 500 : 1000;
         state._diagTimer = setInterval(() => {
           try {
-            if (FF.sim_input) {
+            if (FORCE_SIM) {
               const payload = {
                 ts: Date.now(),
                 rttMs: typeof state.net?.rttMsEwma === 'number' ? Number(state.net.rttMsEwma.toFixed(1)) : null,
@@ -1874,8 +2485,9 @@
                 sentAppends: metrics.sentAppends,
                 sentBytes: metrics.sentBytesAudio,
                 ingressChunks: state.lastIngress?.chunks || 0,
-              ingressBytes: state.lastIngress?.bytes || 0,
-              driftPpm: typeof state.driftPpm === 'number' ? Number(state.driftPpm.toFixed(1)) : 0,
+                ingressBytes: state.lastIngress?.bytes || 0,
+                sendPath: state.sendPath,
+                driftPpm: typeof state.driftPpm === 'number' ? Number(state.driftPpm.toFixed(1)) : 0,
               workletStalls: state.workletStalls || 0,
               watchdogRecovers: state.watchdogRecovers || 0,
               jitterMs: state.jitterMs || 0,
@@ -1885,6 +2497,7 @@
               cancelEvents: state.cancelEvents || 0,
               duckLatencyMs: state.duckLatencyMs || 0,
               bargeActive: !!state.bargeInActive,
+              recvAudioChunks: state.recvAudioChunks || 0,
             };
               if (typeof window !== 'undefined') window.__qvtDiag = payload;
               console.log(JSON.stringify(payload));
@@ -1901,7 +2514,7 @@
         }, interval);
       } catch {}
     }
-    if (!FF.sim_input) {
+    if (!FORCE_SIM) {
       try {
         if (state.recalTimer) clearInterval(state.recalTimer);
         state.recalTimer = setInterval(async () => {
@@ -1934,13 +2547,19 @@
     if (!state.connected) return log('Not connected');
     if (state.micActive) return;
     try {
+      try {
+        console.info(FORCE_SIM ? '[sim] capture=sim, no gUM' : '[mic] capture=mic');
+      } catch {}
       try { if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify({ type: 'input_audio_buffer.clear' })); } catch {}
       state._seq = 0;
+      // Reset commit gating counters at mic start
+      framesSinceCommit = 0;
+      msSinceLastCommit = 0;
       let ctx;
       let source;
       let stream = null;
       let monitorOverride;
-      if (FF.sim_input) {
+      if (FORCE_SIM) {
         const sim = await buildSimulatedSource();
         ctx = sim.ctx;
         source = sim.source;
@@ -1988,7 +2607,7 @@
       await calibrateAmbient(analyser);
       setupDiagnostics(ctx, analyser, stream);
       startVisualizer();
-      if (diag && stream && !FF.sim_input) {
+      if (diag && stream && !FORCE_SIM) {
         try { await autoRecordAnalyse(stream, 5000); } catch (err) { log('autoRecord error', err.message || err); }
       }
     } catch (e) {
@@ -2029,6 +2648,8 @@
       setTtsGain(1.0);
     } catch {}
     teardownDriftTracker();
+    clearResumeAudioTimer('reset');
+    clearIdleCommit();
     // Commit the audio buffer to trigger response
     try {
       if (sendAudioCommit('stopMic')) {
@@ -2091,17 +2712,24 @@
       const rms = Math.sqrt(sum/Math.max(1,ch0.length));
       const pct = Math.round((nz/Math.max(1,ch0.length))*10000)/100;
       log('autoRecord analysis', `nonZero=${pct}% peak=${peak.toFixed(3)} rms=${rms.toFixed(3)}`);
-      // Auto-download for offline inspection
-      try { const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`qvt-diag-${Date.now()}.webm`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),3000);} catch {}
     } catch (e) {
       log('autoRecord analyse error', e.message||e);
     }
   }
 
-  $('btnConnect').addEventListener('click', () => {
-    if (state.connected) { state.ws && state.ws.close(); } else { connect(); }
+  $('btnConnect').addEventListener('click', async () => {
+    if (state.connected) {
+      state.ws && state.ws.close();
+      return;
+    }
+    state.audioUnlockPending = true;
+    await startConnection();
   });
-  $('btnMic').addEventListener('click', () => state.micActive ? stopMic() : startMic());
+  $('btnMic').addEventListener('click', () => {
+    state.audioUnlockPending = true;
+    unlockIOSAudio(state.playCtx || state.audioContext || null);
+    return state.micActive ? stopMic() : startMic();
+  });
   $('btnClear').addEventListener('click', () => { const t = $('transcript'); if (t) t.textContent=''; const l=$('log'); if (l) l.value=''; metrics.sentBytesAudio=metrics.sentAppends=metrics.recvAudioChunks=metrics.recvAudioBytes=metrics.recvTranscriptChars=0; renderMetrics(); });
   $('btnDownload').addEventListener('click', () => {
     try {
@@ -2213,7 +2841,24 @@
   }
 
   // Persist settings
-  const saved = JSON.parse(localStorage.getItem('qvt-settings') || '{}');
+  let storageEnabled = true;
+  let saved = {};
+  try {
+    const rawSaved = localStorage.getItem('qvt-settings');
+    if (rawSaved) {
+      saved = JSON.parse(rawSaved) || {};
+      if (typeof saved !== 'object' || saved === null) saved = {};
+    }
+  } catch (err) {
+    storageEnabled = false;
+    saved = {};
+    if (diag) {
+      try { log('storage.disabled', err?.message || err); } catch {}
+    }
+  }
+  try {
+    window.__qvtMetrics = Object.assign(window.__qvtMetrics || {}, { storage: storageEnabled ? 'enabled' : 'disabled' });
+  } catch {}
   if (saved.vad) $('vadThresh').value = saved.vad;
   if (saved.voice) $('voice').value = saved.voice;
   if (typeof saved.ptt === 'boolean') $('ptt').checked = saved.ptt;
@@ -2228,16 +2873,31 @@
   if (urlRaw) $('rawMic').checked = true;
   if (urlMode === 'worklet' || urlMode === 'script') { try { (document.getElementById('captureMode')||{}).value = urlMode; } catch {} }
   if (saved.captureMode && document.getElementById('captureMode')) document.getElementById('captureMode').value = saved.captureMode;
-  const persist = () => localStorage.setItem('qvt-settings', JSON.stringify({
-    vad: $('vadThresh').value,
-    voice: $('voice').value,
-    ptt: $('ptt').checked,
-    autoCommit: $('autoCommit').checked,
-    deviceId: state.deviceId,
-    speakerId: state.speakerId,
-    rawMic: $('rawMic').checked,
-    captureMode: (document.getElementById('captureMode')||{value:'worklet'}).value,
-  }));
+  const persist = () => {
+    if (!storageEnabled) return;
+    try {
+      localStorage.setItem('qvt-settings', JSON.stringify({
+        vad: $('vadThresh').value,
+        voice: $('voice').value,
+        ptt: $('ptt').checked,
+        autoCommit: $('autoCommit').checked,
+        deviceId: state.deviceId,
+        speakerId: state.speakerId,
+        rawMic: $('rawMic').checked,
+        captureMode: (document.getElementById('captureMode')||{value:'worklet'}).value,
+      }));
+    } catch (err) {
+      storageEnabled = false;
+      state.storageEnabled = false;
+      try {
+        window.__qvtMetrics = Object.assign(window.__qvtMetrics || {}, { storage: 'disabled' });
+      } catch {}
+      updateUiPills();
+      if (diag) {
+        try { log('storage.persist.error', err?.message || err); } catch {}
+      }
+    }
+  };
   $('vadThresh').addEventListener('change', persist);
   $('voice').addEventListener('change', persist);
   $('ptt').addEventListener('change', persist);
@@ -2286,7 +2946,7 @@
       else if (prev && inputs.some(d => d.deviceId === prev)) sel.value = prev;
       state.deviceId = sel.value || null;
       $('devInfo').textContent = inputs.length ? `${inputs.length} input(s)` : 'No inputs found';
-      if (FF.ui_pills && state.deviceId) {
+      if (FF.ui_pills && state.deviceId && storageEnabled) {
         try {
           const stored = localStorage.getItem(`qvt-cal-${state.deviceId}`);
           if (stored) {
@@ -2337,11 +2997,16 @@
   }
 
   async function initDevices() {
-    try {
-      // Some browsers need a permission grant before labels are available
-      const test = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      test.getTracks().forEach(t => t.stop());
-    } catch {}
+    if (FORCE_SIM) {
+      try { console.info('[sim] initDevices skip microphone permission grant'); } catch {}
+    } else if (navigator.mediaDevices?.getUserMedia) {
+      try {
+        const test = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        test.getTracks().forEach(t => t.stop());
+      } catch (err) {
+        if (diag) log('initDevices getUserMedia error', err?.message || err);
+      }
+    }
     await enumerateAudioInputs();
     await enumerateAudioOutputs();
   }
@@ -2350,7 +3015,7 @@
   $('device').addEventListener('change', async () => {
     state.deviceId = $('device').value || null;
     persist();
-    if (FF.ui_pills && state.deviceId) {
+    if (FF.ui_pills && state.deviceId && storageEnabled) {
       try {
         const stored = localStorage.getItem(`qvt-cal-${state.deviceId}`);
         if (stored) {
@@ -2463,7 +3128,7 @@
       thr = Math.round(thr * 100) / 100;
       $('vadThresh').value = String(thr);
       persist();
-      if (FF.ui_pills && state.deviceId) {
+      if (FF.ui_pills && state.deviceId && storageEnabled) {
         try {
           localStorage.setItem(`qvt-cal-${state.deviceId}`, JSON.stringify({
             vad: thr,
@@ -2510,20 +3175,30 @@
   } catch {}
 })();
   async function unlockIOSAudio(ctx) {
-    if (!isIOS) return;
-    if (!ctx) return;
-    try {
-      if (ctx.state !== 'running') await ctx.resume();
-      const src = ctx.createBufferSource();
-      const buffer = ctx.createBuffer(1, 1, ctx.sampleRate);
-      src.buffer = buffer;
-      src.connect(ctx.destination);
-      try { src.start(0); } catch {}
-      setTimeout(() => {
-        try { src.stop(); } catch {}
-        try { src.disconnect(); } catch {}
-      }, 50);
-    } catch (err) {
-      log('unlockAudio', err?.message || err);
+    const context = ctx || state.playCtx || state.audioContext;
+    const outEl = document.getElementById('qvtOut') || state.outEl;
+    if (outEl && !state.outEl) {
+      state.outEl = outEl;
+      state.sinkEl = outEl;
+    }
+    if (context) {
+      try { await context.resume(); } catch (err) { log('unlockAudio', err?.message || err); }
+    }
+    if (outEl) {
+      try {
+        outEl.muted = false;
+        const playPromise = outEl.play();
+        if (playPromise && typeof playPromise.catch === 'function') {
+          playPromise.catch(() => {});
+        }
+        state.audioUnlocked = true;
+        state.audioUnlockPending = false;
+        return;
+      } catch (err) {
+        state.audioUnlockPending = true;
+        log('unlockAudio', err?.message || err);
+      }
+    } else if (isIOS) {
+      state.audioUnlockPending = true;
     }
   }
