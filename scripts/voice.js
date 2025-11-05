@@ -2000,7 +2000,8 @@
     let processor = null;
 
     const batchMs = Math.max(5, Math.min(100, parseFloat(urlParams.get('batchMs') || '20')));
-    const gateParam = Math.max(0, parseFloat(urlParams.get('gate') || '0.002'));
+  // Disable input gate by default to avoid silence skips during diagnosis; can be set via ?gate=0.002
+  const gateParam = Math.max(0, parseFloat(urlParams.get('gate') || '0'));
     const MAX_BUFFERED = 512 * 1024;
     const flushMs = Math.max(15, parseInt(urlParams.get('flushMs') || String(batchMs + 10)));
     let carry = new Float32Array(0);
