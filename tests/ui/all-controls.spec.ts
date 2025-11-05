@@ -19,6 +19,7 @@ test('All controls clickable and state toggles without errors', async ({ page })
 
   const mic = page.getByTestId('btnMic');
   await expect(mic).toBeVisible();
+  await expect(mic).toBeEnabled();
   await mic.click();
   await expect.poll(async () => (await mic.textContent()) || '', { timeout: 10000 }).toMatch(/Stop Mic|Stop/);
   await page.waitForTimeout(300);
