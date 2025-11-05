@@ -1,4 +1,6 @@
 (() => {
+  // Global feature/storage flags must be declared first to avoid TDZ during init
+  let storageEnabled = true;
   const $ = (id) => document.getElementById(id);
 
   const log = (...args) => {
