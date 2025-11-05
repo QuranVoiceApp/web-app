@@ -14,6 +14,10 @@ All notable changes to this project will be documented here.
 - Transport: JSON+seq appends; FE commit gating enforces ≥100ms and ≥4800B.
 - Toggle connect/disconnect testid on connection state.
 
+### CI
+- Add e2e-manual workflow (workflow_dispatch) with Chromium required and WebKit non-blocking.
+
+
 ### Fixed
 - Ensure Connect/Disconnect UI toggle and desktop clickability verified by tests.
 - No automatic downloads post-Connect (only explicit log download supported).
