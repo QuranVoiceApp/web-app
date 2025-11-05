@@ -225,8 +225,9 @@
     enableConnectButton();
   }
   if (swBlocked) {
+    // Show banner but do not block Connect; SW will be unregistered on load
     if (swBannerEl) swBannerEl.classList.add('active');
-    disableConnectButton();
+    enableConnectButton();
   }
   if (diag) log('diag', 'on');
   if (diag && softwareGain !== 1) log('gain', String(softwareGain));
@@ -881,19 +882,14 @@
         btnConnect.classList.remove('btn-danger');
         btnConnect.dataset.state = 'disconnected';
         btnConnect.setAttribute('aria-pressed', 'false');
-        if (window.__qvtSwBlocked) {
-          btnConnect.disabled = true;
-        }
+    // Keep Connect enabled even if SW controller is still active
       }
     }
   };
 
   async function connect() {
     if (state.ws) return;
-    if (window.__qvtSwBlocked) {
-      log('sw.blocked', 'Skipped connect while service worker controller is active');
-      return;
-    }
+    // Allow connect even if SW controller is active (we unregistered on load)
     try {
       log('Connecting to', wsUrl);
       if (diag) {
@@ -1341,10 +1337,7 @@
   }
 
   const startConnection = async () => {
-    if (window.__qvtSwBlocked) {
-      log('sw.blocked', 'Active service worker detected; please reload');
-      return;
-    }
+    // Do not block connection due to service worker; proceed
     if (!unlockReady) {
       if (unlockOverlayEl) unlockOverlayEl.classList.add('active');
       return;
