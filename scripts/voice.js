@@ -940,12 +940,14 @@
         btnConnect.classList.add('btn-danger');
         btnConnect.dataset.state = 'connected';
         btnConnect.setAttribute('aria-pressed', 'true');
+        try { btnConnect.setAttribute('data-testid', 'btnDisconnect'); } catch {}
       } else {
         btnConnect.textContent = 'Connect';
         btnConnect.classList.add('btn-brand');
         btnConnect.classList.remove('btn-danger');
         btnConnect.dataset.state = 'disconnected';
         btnConnect.setAttribute('aria-pressed', 'false');
+        try { btnConnect.setAttribute('data-testid', 'btnConnect'); } catch {}
     // Keep Connect enabled even if SW controller is still active
       }
     }
