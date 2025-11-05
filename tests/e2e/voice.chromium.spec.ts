@@ -2,21 +2,27 @@ import { test, expect } from '@playwright/test';
 // @ts-ignore
 import { attachLogTaps } from '../../helpers/log-tap';
 
+// Configure at top-level per Playwright guidance.
+test.use({
+  browserName: 'chromium',
+  launchOptions: {
+    args: [
+      '--use-fake-device-for-media-stream',
+      '--autoplay-policy=no-user-gesture-required',
+    ],
+  },
+});
+
 const BASE = process.env.BASE_URL ?? 'https://app.asimo.io/index.html';
 const url = (qs: string) => `${BASE}?${qs}`;
 
 test.describe('Chromium voice e2e', () => {
-  test.use({ browserName: 'chromium', launchOptions: {
-    args: [
-      '--use-fake-device-for-media-stream',
-      '--autoplay-policy=no-user-gesture-required'
-    ]
-  }});
 
   test('sim_input speaks and plays audio', async ({ page }) => {
     const taps = await attachLogTaps(page);
     await page.goto(url('ff=seq_json,ui_pills,sim_input&diag=1&auto=1&v=e2e1'), { waitUntil: 'domcontentloaded' });
-
+    // Service worker may block autoStart; click Connect explicitly
+    await page.getByRole('button', { name: /connect/i }).click();
     await expect.poll(() => taps.app.join('\n'), { timeout: 20000 }).toContain('WebSocket open');
 
     await page.waitForTimeout(2000);

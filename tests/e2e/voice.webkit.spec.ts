@@ -1,10 +1,13 @@
 import { test, expect } from '@playwright/test';
 // @ts-ignore
 import { attachLogTaps } from '../../helpers/log-tap';
+
+// Configure at top-level per Playwright guidance.
+test.use({ browserName: 'webkit' });
+
 const BASE = process.env.BASE_URL ?? 'https://app.asimo.io/index.html';
 
 test.describe('WebKit voice e2e', () => {
-  test.use({ browserName: 'webkit' });
 
   test('unlock→connect→sim_input plays audio', async ({ page }) => {
     const taps = await attachLogTaps(page);

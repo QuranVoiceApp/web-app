@@ -11,7 +11,8 @@ exports.attachLogTaps = async function attachLogTaps(page, ctx = {}) {
     window.__tapPoll = () => {
       const el = document.getElementById('log');
       if (el) {
-        const lines = (el.innerText || '').split('\n').slice(-1000);
+        const text = (el.tagName === 'TEXTAREA') ? (/** @type {HTMLTextAreaElement} */(el).value || '') : (el.innerText || '');
+        const lines = text.split('\n').slice(-1000);
         // @ts-ignore
         window.__tapAppLog(lines);
       } else if (Array.isArray(window.__qvtLogs)) {
