@@ -275,6 +275,8 @@
     nzSamples: 0,
     totalSamples: 0,
   };
+  // Storage availability flag (used in initial state); actual detection runs later
+  let storageEnabled = true;
   // Ensure an element exists before binding; if not, bind after DOMContentLoaded
   const ensureElement = (id, binder) => {
     try {
@@ -2879,8 +2881,7 @@
     }
   }
 
-  // Persist settings
-  let storageEnabled = true;
+  // Persist settings (reuse storageEnabled declared earlier)
   let saved = {};
   try {
     const rawSaved = localStorage.getItem('qvt-settings');
