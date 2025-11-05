@@ -15,7 +15,8 @@ test('All controls clickable and state toggles without errors', async ({ page })
   const connect = page.getByTestId('btnConnect');
   await expect(connect).toBeVisible();
   await connect.click();
-  await expect.poll(() => taps.app.join('\n'), { timeout: 20000 }).toContain('WebSocket open');
+  // Rely on stable testid toggle instead of log scraping for reliability
+  await expect(page.getByTestId('btnDisconnect')).toBeVisible({ timeout: 20000 });
 
   const mic = page.getByTestId('btnMic');
   await expect(mic).toBeVisible();

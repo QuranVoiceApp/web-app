@@ -11,24 +11,18 @@ test.describe('Transcript ↔ audio greeting match (sim path)', () => {
     await page.waitForFunction(() => !!(window as any).__qvtMetrics, { timeout: 20000 });
     await page.getByTestId('btnConnect').click();
 
-    const traceId = await page.waitForFunction(() => (window as any).__qvtSession?.traceId, { timeout: 20000 })
-      .then(res => res.jsonValue() as Promise<string>);
-
-    // Attempt a chirp to verify sink — skip if endpoint not yet deployed
-    try {
-      const ctx = await request.newContext();
-      const r = await ctx.get(`https://quran.asimo.io/debug/tts-chirp?trace_id=${traceId}`);
-      if (!r.ok()) test.skip(true, 'debug endpoint unavailable');
-    } catch {}
-
-    await page.waitForFunction(() => ((window as any).__qvtMetrics?.recvAudioChunks ?? 0) > 0, { timeout: 20000 });
-
+    // Ensure the WS is open by waiting for the Disconnect toggle
+    await expect(page.getByTestId('btnDisconnect')).toBeVisible({ timeout: 20000 });
+    
     // Ask the backend to speak a deterministic line via the open WS (helper wsSend)
     const ok = await page.evaluate(() => {
       // @ts-ignore
       return window.wsSend?.({ type: 'response.create', response: { modalities: ['audio'], instructions: 'Hello from Quran Voice Tutor.' } }) ?? false;
     });
     expect(ok).toBeTruthy();
+
+    // Now wait for audio to flow
+    await page.waitForFunction(() => ((window as any).__qvtMetrics?.recvAudioChunks ?? 0) > 0, { timeout: 20000 });
 
     await page.waitForTimeout(1000);
 
@@ -37,4 +31,3 @@ test.describe('Transcript ↔ audio greeting match (sim path)', () => {
     expect((t ?? '').toLowerCase()).toContain('hello from quran voice tutor');
   });
 });
-
