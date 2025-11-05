@@ -11,12 +11,12 @@ test('All controls clickable and state toggles without errors', async ({ page })
   const base = process.env.BASE_URL || 'https://app.asimo.io/index.html';
   await page.goto(withV(`${base}?ff=seq_json,ui_pills&diag=1&auto=0&gate=0`), { waitUntil: 'domcontentloaded' });
 
-  const connect = page.getByRole('button', { name: /connect/i });
+  const connect = page.getByTestId('btnConnect');
   await expect(connect).toBeVisible();
   await connect.click();
   await expect.poll(() => taps.app.join('\n'), { timeout: 20000 }).toContain('WebSocket open');
 
-  const mic = page.locator('#btnMic');
+  const mic = page.getByTestId('btnMic');
   await expect(mic).toBeVisible();
   await mic.click();
   await expect.poll(async () => (await mic.textContent()) || '', { timeout: 10000 }).toMatch(/Stop Mic|Stop/);
@@ -25,8 +25,8 @@ test('All controls clickable and state toggles without errors', async ({ page })
   await expect.poll(async () => (await mic.textContent()) || '', { timeout: 10000 }).toMatch(/Start Mic|Start/);
 
   // Device selectors present
-  await expect(page.locator('#inputDevice')).toBeVisible();
-  await expect(page.locator('#speakerSelect')).toBeVisible({ timeout: 10000 }).catch(() => {});
+  await expect(page.getByTestId('selectDevice')).toBeVisible();
+  await expect(page.getByTestId('speakerSelect')).toBeVisible({ timeout: 10000 }).catch(() => {});
 
   // UI pills visible when enabled
   await expect(page.locator('[data-testid="pill-send"]')).toBeVisible();
@@ -38,4 +38,3 @@ test('All controls clickable and state toggles without errors', async ({ page })
   const failures = findBadLogs(taps.console, taps.app);
   expect(failures).toEqual([]);
 });
-

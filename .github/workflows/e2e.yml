@@ -4,7 +4,7 @@ on:
   push:
     branches: [ fix/**, feat/**, main ]
 jobs:
-  test-chromium:
+  e2e-chromium:
     runs-on: ubuntu-latest
     env:
       BASE_URL: https://app.asimo.io/index.html
@@ -15,7 +15,7 @@ jobs:
           node-version: 20
       - run: npm ci || npm i --no-audit --no-fund
       - run: npx playwright install --with-deps
-      - run: npx playwright test tests/e2e/voice.chromium.spec.ts --project=chromium --reporter=list,html
+      - run: npx playwright test --project=chromium --reporter=list,html --trace on
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -23,7 +23,7 @@ jobs:
           path: playwright-report/**
           if-no-files-found: warn
 
-  test-webkit:
+  e2e-webkit:
     runs-on: ubuntu-latest
     continue-on-error: true
     env:
@@ -35,7 +35,7 @@ jobs:
           node-version: 20
       - run: npm ci || npm i --no-audit --no-fund
       - run: npx playwright install --with-deps
-      - run: npx playwright test tests/e2e/voice.webkit.spec.ts --project=webkit --reporter=list,html
+      - run: npx playwright test --project=webkit --reporter=list,html --trace on
       - if: always()
         uses: actions/upload-artifact@v4
         with:
