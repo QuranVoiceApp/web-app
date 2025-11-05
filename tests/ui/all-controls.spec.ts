@@ -21,11 +21,20 @@ test('All controls clickable and state toggles without errors', async ({ page })
   const mic = page.getByTestId('btnMic');
   await expect(mic).toBeVisible();
   await expect(mic).toBeEnabled();
-  await mic.click();
-  await expect.poll(async () => (await mic.textContent()) || '', { timeout: 10000 }).toMatch(/Stop Mic|Stop/);
-  await page.waitForTimeout(300);
-  await mic.click();
-  await expect.poll(async () => (await mic.textContent()) || '', { timeout: 10000 }).toMatch(/Start Mic|Start/);
+  // Handle both possibilities: auto-start may already have engaged the mic in sim_input
+  const initialText = (await mic.textContent()) || '';
+  if (/Stop/i.test(initialText)) {
+    // Already recording; clicking should stop
+    await mic.click();
+    await expect.poll(async () => (await mic.textContent()) || '', { timeout: 10000 }).toMatch(/Start/i);
+  } else {
+    // Not recording; clicking should start
+    await mic.click();
+    await expect.poll(async () => (await mic.textContent()) || '', { timeout: 10000 }).toMatch(/Stop/i);
+    await page.waitForTimeout(300);
+    await mic.click();
+    await expect.poll(async () => (await mic.textContent()) || '', { timeout: 10000 }).toMatch(/Start/i);
+  }
 
   // Device selectors present
   await expect(page.getByTestId('selectDevice')).toBeVisible();
