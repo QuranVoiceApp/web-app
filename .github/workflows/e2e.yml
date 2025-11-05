@@ -15,7 +15,7 @@ jobs:
           node-version: 20
       - run: npm ci || npm i --no-audit --no-fund
       - run: npx playwright install --with-deps
-      - run: npx playwright test -c .
+      - run: npx playwright test tests/e2e/*.spec.ts --project=chromium --project=webkit
       - if: always()
         uses: actions/upload-artifact@v4
         with:
