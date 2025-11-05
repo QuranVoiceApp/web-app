@@ -242,6 +242,16 @@
     nzSamples: 0,
     totalSamples: 0,
   };
+  // Ensure an element exists before binding; if not, bind after DOMContentLoaded
+  const ensureElement = (id, binder) => {
+    try {
+      const el = $(id);
+      if (el) { binder(el); return; }
+      const bindLater = () => { try { const late = $(id); if (late) binder(late); } catch {} };
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bindLater, { once: true });
+      else setTimeout(bindLater, 0);
+    } catch {}
+  };
   // Strict commit gating counters – do not commit unless ≥5 frames (≈100ms)
   let framesSinceCommit = 0;
   let msSinceLastCommit = 0;
@@ -2711,38 +2721,38 @@
     }
   }
 
-  $('btnConnect').addEventListener('click', async () => {
+  ensureElement('btnConnect', (el) => el.addEventListener('click', async () => {
     if (state.connected) {
       state.ws && state.ws.close();
       return;
     }
     state.audioUnlockPending = true;
     await startConnection();
-  });
-  $('btnMic').addEventListener('click', () => {
+  }));
+  ensureElement('btnMic', (el) => el.addEventListener('click', () => {
     state.audioUnlockPending = true;
     unlockIOSAudio(state.playCtx || state.audioContext || null);
     return state.micActive ? stopMic() : startMic();
-  });
-  $('btnClear').addEventListener('click', () => { const t = $('transcript'); if (t) t.textContent=''; const l=$('log'); if (l) l.value=''; metrics.sentBytesAudio=metrics.sentAppends=metrics.recvAudioChunks=metrics.recvAudioBytes=metrics.recvTranscriptChars=0; renderMetrics(); });
-  $('btnDownload').addEventListener('click', () => {
+  }));
+  ensureElement('btnClear', (el) => el.addEventListener('click', () => { const t = $('transcript'); if (t) t.textContent=''; const l=$('log'); if (l) l.value=''; metrics.sentBytesAudio=metrics.sentAppends=metrics.recvAudioChunks=metrics.recvAudioBytes=metrics.recvTranscriptChars=0; renderMetrics(); }));
+  ensureElement('btnDownload', (el) => el.addEventListener('click', () => {
     try {
       const blob = new Blob([logBuffer.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob); a.download = `qvt-log-${Date.now()}.txt`; a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 3000);
     } catch {}
-  });
-  $('btnClearLog').addEventListener('click', () => { const l=$('log'); if (l) l.value=''; logBuffer.length=0; log('cleared logs'); });
-  $('btnCopyLog').addEventListener('click', async () => {
+  }));
+  ensureElement('btnClearLog', (el) => el.addEventListener('click', () => { const l=$('log'); if (l) l.value=''; logBuffer.length=0; log('cleared logs'); }));
+  ensureElement('btnCopyLog', (el) => el.addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(logBuffer.join('\n')); log('copied logs to clipboard'); }
     catch { try { const l=$('log'); l.focus(); l.select(); document.execCommand('copy'); log('copied logs (fallback)'); } catch (e) { log('copy failed', e.message||e); } }
-  });
-  $('btnResumeAudio').addEventListener('click', async () => {
+  }));
+  ensureElement('btnResumeAudio', (el) => el.addEventListener('click', async () => {
     try { await state.audioContext?.resume(); } catch {}
     try { await state.playCtx?.resume(); } catch {}
     log('resume', `audio=${state.audioContext?.state} play=${state.playCtx?.state}`);
-  });
+  }));
 
   // Loopback test: record ~1s from current (or default) mic and play back. Report % non-zero.
   $('btnLoopback')?.addEventListener('click', async () => {
@@ -2781,7 +2791,7 @@
   });
 
   // Auto-detect mic: try available devices briefly and choose the one with highest peak
-  $('btnAutoDetect').addEventListener('click', async () => {
+  ensureElement('btnAutoDetect', (el) => el.addEventListener('click', async () => {
     try {
       log('auto-detect', 'starting scan of input devices');
       const devices = await navigator.mediaDevices.enumerateDevices();
@@ -2801,7 +2811,7 @@
       if (state.micActive) { stopMic(); }
       startMic();
     } catch (e) { log('auto-detect error', e.message || e); }
-  });
+  }));
 
   async function sampleDeviceOnce(deviceId) {
     const raw = true;
@@ -2898,7 +2908,7 @@
   $('autoCommit').addEventListener('change', persist);
   document.getElementById('captureMode')?.addEventListener('change', () => { persist(); if (state.micActive) { stopMic(); startMic(); } });
   $('rawMic').addEventListener('change', () => { persist(); if (state.micActive) { stopMic(); startMic(); }});
-  $('btnUseDefault').addEventListener('click', () => { state.deviceId = null; persist(); if (state.micActive) { stopMic(); } startMic(); });
+  ensureElement('btnUseDefault', (el) => el.addEventListener('click', () => { state.deviceId = null; persist(); if (state.micActive) { stopMic(); } startMic(); }));
 
   // Real-time session.update when voice or VAD threshold changes
   const sendSessionUpdate = () => {
@@ -3005,8 +3015,8 @@
     await enumerateAudioOutputs();
   }
 
-  $('btnRefreshDevs').addEventListener('click', () => enumerateAudioInputs());
-  $('device').addEventListener('change', async () => {
+  ensureElement('btnRefreshDevs', (el) => el.addEventListener('click', () => enumerateAudioInputs()));
+  ensureElement('device', (el) => el.addEventListener('change', async () => {
     state.deviceId = $('device').value || null;
     persist();
     if (FF.ui_pills && state.deviceId && storageEnabled) {
@@ -3019,14 +3029,14 @@
       } catch {}
     }
     if (state.micActive) { stopMic(); startMic(); }
-  });
-  $('speaker').addEventListener('change', async () => {
+  }));
+  ensureElement('speaker', (el) => el.addEventListener('change', async () => {
     state.speakerId = $('speaker').value || null;
     persist();
     if (state.outputSupported && state.sinkEl && state.speakerId) {
       try { await state.sinkEl.setSinkId(state.speakerId); log('speaker set', state.speakerId); } catch (e) { log('speaker set error', e.message || e); }
     }
-  });
+  }));
   if (navigator.mediaDevices && 'ondevicechange' in navigator.mediaDevices) {
     navigator.mediaDevices.ondevicechange = () => { enumerateAudioInputs(); enumerateAudioOutputs(); };
   }
@@ -3087,7 +3097,7 @@
   function stopVisualizer() { if (state.visRaf) cancelAnimationFrame(state.visRaf); state.visRaf = null; }
 
   // Mic calibration: estimate noise floor and set VAD threshold
-  $('btnCalibrate').addEventListener('click', async () => {
+  ensureElement('btnCalibrate', (el) => el.addEventListener('click', async () => {
     try {
       let rmsSum = 0, peak = 0, frames = 0;
       const durMs = 1500;
@@ -3136,7 +3146,7 @@
  } catch (e) {
     log('calibrate error', e.message || e);
   }
-});
+  }));
 
   try {
     if (typeof window !== 'undefined') {
