@@ -13,8 +13,8 @@ test.describe('Phase 4 playback polish', () => {
 
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => {
-      const metrics = (window as any).__qvtMetrics;
-      return metrics && typeof metrics.commitWindowMs === 'number';
+      const session = (window as any).__qvtSession;
+      return session && session.net && typeof session.net.commitWinMs === 'number';
     }, { timeout: 20000 });
 
     const metrics = await page.evaluate(async () => {
@@ -23,13 +23,15 @@ test.describe('Phase 4 playback polish', () => {
         await globalAny.__qvtTest.awaitReady();
       }
       await new Promise((resolve) => setTimeout(resolve, 1500));
+      const session = globalAny.__qvtSession || {};
+      const playback = session.playback || {};
       return {
-        commitWindowMs: globalAny.__qvtMetrics?.commitWindowMs ?? null,
-        rttMsEwma: globalAny.__qvtMetrics?.rttMsEwma ?? null,
-        playbackUnderruns: globalAny.__qvtMetrics?.playbackUnderruns ?? 0,
-        crossfadeCount: globalAny.__qvtMetrics?.crossfadeCount ?? 0,
-        upsampleMode: globalAny.__qvtMetrics?.upsampleMode ?? 'unknown',
-        jitterMs: globalAny.__qvtMetrics?.jitterMs ?? 0,
+        commitWindowMs: session.net?.commitWinMs ?? null,
+        rttMsEwma: session.net?.rttMsEwma ?? null,
+        playbackUnderruns: playback.underruns ?? 0,
+        crossfadeCount: playback.crossfadeCount ?? 0,
+        upsampleMode: playback.upsampleMode ?? 'unknown',
+        jitterMs: playback.jitterMs ?? 0,
       };
     });
 

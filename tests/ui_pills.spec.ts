@@ -12,7 +12,10 @@ test.describe('Phase 5 UI pills', () => {
     const url = withCacheBuster(`${base}?ff=ui_pills,sim_input&auto=1&diag=1`);
     await page.goto(url, { waitUntil: 'domcontentloaded' });
 
-    await page.waitForFunction(() => !!(window as any).__qvtMetrics, { timeout: 20000 });
+    await page.waitForFunction(() => {
+      const session = (window as any).__qvtSession;
+      return session && session.net && typeof session.net.commitWinMs === 'number';
+    }, { timeout: 20000 });
 
     const ingress = page.locator('[data-testid="pill-ingress"]');
     const rtt = page.locator('[data-testid="pill-rtt"]');
