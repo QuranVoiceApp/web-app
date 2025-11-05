@@ -29,6 +29,7 @@
       ui_pills: set.has('ui_pills'),
       pb_polish: set.has('pb_polish'),
       sim_input: set.has('sim_input'),
+      smoke: set.has('smoke'),
       diag: set.has('diag') || urlParams.get('diag') === '1',
       telemetry: !set.has('no_telemetry'),
       wake_lock: !set.has('no_wake_lock'),
@@ -1245,13 +1246,14 @@
           try { log('=> session.update keys', Object.keys(sessionUpdate.session).join(',')); } catch {}
         } catch {}
         try {
-          const greetingSent = sendResponseCreate({
-            modalities: ['audio'],
-            instructions: 'Hello! This is a Safari audio check.',
-            metadata: { kind: 'smoke' },
-          });
-          if (greetingSent) {
-            state.initialGreetingSent = true;
+          const wantSmoke = FF.smoke || (urlParams.get('smoke') === '1');
+          if (wantSmoke) {
+            const greetingSent = sendResponseCreate({
+              modalities: ['audio'],
+              instructions: 'Hello! This is an audio check.',
+              metadata: { kind: 'smoke' },
+            });
+            if (greetingSent) state.initialGreetingSent = true;
           }
         } catch (err) {
           if (diag) log('initial greeting error', err?.message || err);
@@ -1880,6 +1882,7 @@
     try {
       state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
       state.msSinceLastCommit = 0;
+      state.appendsSinceCommit = 0;
       state.lastCommitReason = reason;
       if (FF.barge_in) {
         clearBargeResumeTimer();
@@ -1921,6 +1924,7 @@
         window.__qvtSession = Object.assign(window.__qvtSession || {}, { sendPath: resolvedSendPath });
       } catch {}
       scheduleIdleCommit('frame');
+      state.appendsSinceCommit = (state.appendsSinceCommit || 0) + 1;
       return true;
     } catch (err) {
       log('sendAudioFrame error', err?.message || err);
@@ -2057,9 +2061,6 @@
           try {
             if ((state.msSinceLastCommit || 0) >= commitWindowMs()) {
               if (sendAudioCommit('straggler')) {
-                if (!state.responseActive) {
-                  state.ws.send(JSON.stringify({ type: 'response.create' }));
-                }
                 log('auto-commit (straggler flush)');
               }
             }
