@@ -2,18 +2,28 @@
   const $ = (id) => document.getElementById(id);
 
   const log = (...args) => {
-    const el = $('log');
     const line = `[${new Date().toLocaleTimeString()}] ${args.join(' ')}`;
-    el.value += line + "\n";
-    el.scrollTop = el.scrollHeight;
-    console.log(...args);
-    logBuffer.push(line);
+    const el = $('log');
+    if (el) {
+      try { el.value += line + "\n"; el.scrollTop = el.scrollHeight; } catch {}
+    }
+    try { console.log(...args); } catch {}
+    try { logBuffer.push(line); } catch {}
   };
 
   const logBuffer = [];
+  // Global error capture → surface to in-app log
+  try {
+    window.addEventListener('error', (e) => {
+      try { log('ERR', e?.message || e); } catch {}
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+      try { log('REJECTION', (e?.reason && (e.reason.message || String(e.reason))) || 'unhandled promise rejection'); } catch {}
+    });
+  } catch {}
 
   const wsUrl = (window.Env && window.Env.WS_URL) || 'wss://quran.asimo.io/realtime/v1/ws';
-  $('wsUrl').textContent = wsUrl;
+  try { const elWs = $('wsUrl'); if (elWs) elWs.textContent = wsUrl; } catch {}
   const urlParams = new URLSearchParams(location.search);
   const ffTokens = (urlParams.get('ff') || '').split(',').filter(Boolean);
   const FF = (() => {
@@ -576,7 +586,8 @@
   if (!FF.ui_pills) {
     setUiPillsVisible(false);
   } else {
-    updateUiPills();
+    // Defer update until state is initialized; just show pills now
+    setUiPillsVisible(true);
   }
   const speakerRowEl = document.getElementById('speakerRow');
   if (!canSelectOutput && speakerRowEl) {
