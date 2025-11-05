@@ -278,7 +278,7 @@
     totalSamples: 0,
   };
   // Storage availability flag (used in initial state); actual detection runs later
-  let storageEnabled = true;
+  // Note: declared once at top to avoid redeclaration errors
   // Ensure an element exists before binding; if not, bind after DOMContentLoaded
   const ensureElement = (id, binder) => {
     try {
