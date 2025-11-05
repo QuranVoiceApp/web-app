@@ -495,6 +495,7 @@
   };
 
   const renderMetrics = () => {
+    try { if (!state || !state.net) return; } catch { return; }
     const m = $('metrics'); if (!m) return;
     syncWatchdogMetrics();
     const nzPct = metrics.totalSamples ? Math.round((metrics.nzSamples / metrics.totalSamples) * 100) : 0;
