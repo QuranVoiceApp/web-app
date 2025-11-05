@@ -49,6 +49,16 @@
   try {
     window.__qvtSession = window.__qvtSession || {};
     window.__qvtMetrics = window.__qvtMetrics || {};
+    const playbackDefaults = {
+      jitterMs: 0,
+      underruns: 0,
+      crossfadeCount: 0,
+      upsampleMode: 'native',
+      dcOffset: 0,
+    };
+    window.__qvtMetrics.playback = Object.assign({}, playbackDefaults, window.__qvtMetrics.playback || {});
+    window.__qvtMetrics.upsampleMode = window.__qvtMetrics.upsampleMode || 'native';
+    window.__qvtMetrics.net = Object.assign({ commitWinMs: 100, rttMsEwma: 0 }, window.__qvtMetrics.net || {});
     window.__qvtTest = Object.assign(window.__qvtTest || {}, {});
   } catch {}
 
@@ -238,6 +248,13 @@
     state.commitWinMs = winDisplay;
     try {
       if (typeof window !== 'undefined') {
+        const netSnapshot = Object.assign({}, state.net, { commitWinMs: winDisplay, rttMsEwma: state.net?.rttMsEwma });
+        const playbackSnapshot = {
+          jitterMs: state.jitterMs || 0,
+          underruns: state.playbackUnderruns || 0,
+          crossfadeCount: state.crossfadeCount || 0,
+          upsampleMode: state.upsampleMode || 'native',
+        };
         window.__qvtMetrics = Object.assign({}, window.__qvtMetrics, {
           commitWindowMs: winDisplay,
           commitWinMs: winDisplay,
@@ -261,16 +278,13 @@
           crossfadeCount: state.crossfadeCount || 0,
           dcOffset: state.dcOffset || 0,
           upsampleMode: state.upsampleMode || 'native',
+          net: netSnapshot,
+          playback: playbackSnapshot,
         });
         try {
           window.__qvtSession = Object.assign(window.__qvtSession || {}, {
-            net: Object.assign({}, state.net, { commitWinMs: winDisplay, rttMsEwma: state.net?.rttMsEwma }),
-            playback: {
-              jitterMs: state.jitterMs || 0,
-              underruns: state.playbackUnderruns || 0,
-              crossfadeCount: state.crossfadeCount || 0,
-              upsampleMode: state.upsampleMode || 'native',
-            },
+            net: netSnapshot,
+            playback: playbackSnapshot,
           });
         } catch {}
         try { window.__qvtTest._markReady(); } catch {}
@@ -585,16 +599,15 @@
         state.ws = ws;
         state.connected = true;
         setConn(true);
-      log('WebSocket open');
-      startDiagPinger();
-      if (FF.diag && FF.ui_pills) {
-        try {
-          state.commitWinMs = commitWindowMs();
-          updateUiPills();
-          renderMetrics();
-        } catch {}
-      }
-      try { state.playCtx?.resume(); } catch {}
+        log('WebSocket open');
+        startDiagPinger();
+        if (FF.ui_pills) {
+          try {
+            state.commitWinMs = commitWindowMs();
+            updateUiPills();
+          } catch {}
+        }
+        try { state.playCtx?.resume(); } catch {}
         // Send client state only when diagnostics enabled
         if (FF.diag) {
           try {

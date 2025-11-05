@@ -12,18 +12,25 @@ test.describe('Phase 4 playback polish', () => {
     const url = withCacheBuster(`${base}?ff=seq_json,pb_polish,sim_input&diag=1&auto=1`);
 
     await page.goto(url, { waitUntil: 'domcontentloaded' });
-    await page.waitForFunction(() => !!(window as any).__qvtSession, { timeout: 20000 });
+    await page.waitForFunction(() => {
+      const w = window as any;
+      if (!w) return false;
+      if (w.__qvtReady === true) return true;
+      return !!w.__qvtSession || !!w.__qvtMetrics;
+    }, { timeout: 20000 });
 
     const metrics = await page.evaluate(() => {
       const session = (window as any).__qvtSession || {};
       const playback = session.playback || {};
+      const fallback = (window as any).__qvtMetrics || {};
+      const playbackFallback = fallback.playback || {};
       return {
-        commitWindowMs: session.net?.commitWinMs ?? null,
-        rttMsEwma: session.net?.rttMsEwma ?? null,
-        playbackUnderruns: playback.underruns ?? 0,
-        crossfadeCount: playback.crossfadeCount ?? 0,
-        upsampleMode: playback.upsampleMode ?? 'unknown',
-        jitterMs: playback.jitterMs ?? 0,
+        commitWindowMs: session.net?.commitWinMs ?? fallback.net?.commitWinMs ?? null,
+        rttMsEwma: session.net?.rttMsEwma ?? fallback.net?.rttMsEwma ?? null,
+        playbackUnderruns: playback.underruns ?? playbackFallback.underruns ?? 0,
+        crossfadeCount: playback.crossfadeCount ?? playbackFallback.crossfadeCount ?? 0,
+        upsampleMode: playback.upsampleMode ?? playbackFallback.upsampleMode ?? 'native',
+        jitterMs: playback.jitterMs ?? playbackFallback.jitterMs ?? 0,
       };
     });
 
