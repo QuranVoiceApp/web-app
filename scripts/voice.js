@@ -1,4 +1,14 @@
 (() => {
+  if (typeof window !== 'undefined') {
+    try {
+      if (window.__qvtLoaded) {
+        const b = document.getElementById('bootBanner');
+        if (b) { b.style.display = 'block'; b.textContent = 'Boot error: duplicate scripts detected. Reload the page.'; }
+        throw new Error('QVT duplicate load');
+      }
+      window.__qvtLoaded = true;
+    } catch {}
+  }
   // Global feature/storage flags must be declared first to avoid TDZ during init
   let storageEnabled = true;
   const $ = (id) => document.getElementById(id);
@@ -2285,6 +2295,13 @@
       connectingWorklet = true;
       try {
         cleanupProcessor();
+        try {
+          const url = './scripts/pcm_worklet.js';
+          const res = await fetch(url, { cache: 'no-store' });
+          if (!res.ok) { log('worklet load failed', String(res.status)); throw new Error('worklet 404'); }
+        } catch (e) {
+          log('worklet prefetch error', e?.message || e);
+        }
         await ctx.audioWorklet.addModule('./scripts/pcm_worklet.js');
         const node = new AudioWorkletNode(ctx, 'pcm-capture');
         try { node.port.postMessage({ type: 'configure_fir', enabled: wantFir, coeffs: wantFir ? Array.from(dsp.HALF_BAND_COEFFS) : null }); } catch {}
