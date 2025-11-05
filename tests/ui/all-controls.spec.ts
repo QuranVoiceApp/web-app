@@ -9,7 +9,8 @@ const withV = (base: string) => `${base}${base.includes('?') ? '&' : '?'}v=${Dat
 test('All controls clickable and state toggles without errors', async ({ page }) => {
   const taps = await attachLogTaps(page);
   const base = process.env.BASE_URL || 'https://app.asimo.io/index.html';
-  await page.goto(withV(`${base}?ff=seq_json,ui_pills&diag=1&auto=0&gate=0`), { waitUntil: 'domcontentloaded' });
+  // Use sim_input in CI to avoid getUserMedia prompts and device absence on runners
+  await page.goto(withV(`${base}?ff=seq_json,ui_pills,sim_input&diag=1&auto=0&gate=0`), { waitUntil: 'domcontentloaded' });
 
   const connect = page.getByTestId('btnConnect');
   await expect(connect).toBeVisible();
