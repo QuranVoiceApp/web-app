@@ -595,7 +595,7 @@
     const info = $('speakerInfo');
     if (info) info.textContent = 'Use Control Center to choose speaker / AirPods';
   }
-  renderMetrics();
+  // Defer first metrics render until after state is initialized
 
   const scheduleAutoStart = () => {
     if (!autoStart || scheduleAutoStart._ran) return;
