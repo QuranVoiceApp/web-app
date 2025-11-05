@@ -861,6 +861,7 @@
     tailPadNeeded: false,
     cancelEvents: 0,
   };
+  try { window.state = state; window.__qvtState = state; } catch {}
   try {
     window.__qvtSession = Object.assign({}, window.__qvtSession, {
       net: Object.assign({}, state.net, { commitWinMs: state.net.minCommitMs ?? 100, rttMsEwma: state.net.rttMsEwma }),
