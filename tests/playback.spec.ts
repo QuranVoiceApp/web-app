@@ -14,13 +14,8 @@ test.describe('Phase 4 playback polish', () => {
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => !!(window as any).__qvtSession, { timeout: 20000 });
 
-    const metrics = await page.evaluate(async () => {
-      const globalAny = window as any;
-      if (globalAny.__qvtTest?.awaitReady) {
-        await globalAny.__qvtTest.awaitReady();
-      }
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      const session = globalAny.__qvtSession || {};
+    const metrics = await page.evaluate(() => {
+      const session = (window as any).__qvtSession || {};
       const playback = session.playback || {};
       return {
         commitWindowMs: session.net?.commitWinMs ?? null,
