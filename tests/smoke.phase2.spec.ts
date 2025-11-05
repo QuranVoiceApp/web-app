@@ -7,7 +7,7 @@ import { findBadLogs } from '../helpers/expect-no-bad-logs';
 const sha = process.env.SHORTSHA || process.env.PHASE2_SHA || process.env.GITHUB_SHA || 'dev';
 const shortSha = sha.slice(0, 7);
 const BASE_URL = process.env.BASE_URL || 'https://app.asimo.io/';
-const defaultUrl = `${BASE_URL}?ff=seq_json,fir_halfband,drift_comp,watchdog,sim_input&diag=1&auto=1&v=${shortSha}`;
+const defaultUrl = `${BASE_URL}?ff=seq_json,fir_halfband,drift_comp,watchdog,sim_input&diag=1&auto=1&smoke=1&v=${shortSha}`;
 const TARGET_URL = process.env.PHASE2_URL || defaultUrl;
 
 const jitterBounds = { min: 50, max: 90 };
@@ -58,4 +58,13 @@ test('Phase 2 simulated transport smoke', async ({ page }) => {
   expect(metrics.sentAppends).toBeGreaterThanOrEqual(6);
   const failures = findBadLogs(taps.console, taps.app);
   expect(failures).toEqual([]);
+
+  // Optional backend metrics tap
+  const METRICS_URL = process.env.METRICS_URL || process.env.PHASE_METRICS;
+  if (METRICS_URL) {
+    const res = await fetch(METRICS_URL);
+    expect(res.ok).toBeTruthy();
+    const json = await res.json();
+    expect(json.ok).toBeTruthy();
+  }
 });
