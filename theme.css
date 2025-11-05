@@ -21,3 +21,14 @@
   padding: 0.6rem 1rem;
   border-radius: 6px;
 }
+.btn-danger {
+  background: #ff4d4f;
+  color: #0b0b0b;
+  border: none;
+  padding: 0.6rem 1rem;
+  border-radius: 6px;
+}
+button,
+.btn-brand,
+.btn-danger { cursor: pointer; }
+canvas { pointer-events: none; }
