@@ -49,14 +49,10 @@
   try { window.__qvtFlagTokens = ffTokens.slice(); } catch {}
   const activeFlags = ffTokens.join(',') || 'none';
   const sendParam = (urlParams.get('send') || '').toLowerCase();
-  const wantsSeqJson = flagOn('seq_json') || flagOn('seq-json') || flagOn('seqjson');
-  const wantsBinary = flagOn('binary') || flagOn('send_binary') || flagOn('seq_off') || flagOn('seqjson_off');
+  // Force json+seq transport for stability across Chrome/iOS
+  const wantsSeqJson = true;
+  const wantsBinary = false;
   let resolvedSendPath = 'json+seq';
-  if (wantsSeqJson || sendParam === 'json' || sendParam === 'json+seq') {
-    resolvedSendPath = 'json+seq';
-  } else if (wantsBinary || sendParam === 'binary' || sendParam === 'bin') {
-    resolvedSendPath = 'binary';
-  }
   let sendMode = resolvedSendPath;
 
   try {
@@ -245,6 +241,9 @@
     nzSamples: 0,
     totalSamples: 0,
   };
+  // Strict commit gating counters – do not commit unless ≥5 frames (≈100ms)
+  let framesSinceCommit = 0;
+  let msSinceLastCommit = 0;
   const IDLE_COMMIT_MS = 1200;
   const scheduleIdleCommit = (reason = 'timer') => {
     if (state.idleCommitTimer) {
@@ -274,16 +273,13 @@
       state.inactivityTimer = setTimeout(() => {
         try {
           // Only commit if some audio was sent recently and we have ≥commit window buffered
+          if (state.responseActive) { log('commit.skipped responseActive'); return; }
           const ageOk = (Date.now() - (state.lastAudioSentAt||0)) > (commitDelay - 50);
-          const win = commitWindowMs();
-          const durOk = (state.msSinceLastCommit||0) >= win;
-          if (ageOk && durOk && (metrics.sentAppends||0) > 0) {
-            if (sendAudioCommit('inactivity')) {
-              if (!state.responseActive) {
-                state.ws.send(JSON.stringify({ type: 'response.create' }));
-              }
-              log('auto-commit (inactivity)');
-            }
+          const framesOk = framesSinceCommit >= 5;
+          if (ageOk && framesOk && (metrics.sentAppends||0) > 0) {
+            if (sendAudioCommit('inactivity')) log('auto-commit (inactivity)');
+          } else if (!framesOk) {
+            try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
           }
         } catch {}
       }, commitDelay);
@@ -450,6 +446,7 @@
 
   const sendResponseCreate = ({ modalities = ['audio'], instructions = '', audioVoice, fallback = false } = {}) => {
     if (!state.ws || state.ws.readyState !== 1) return false;
+    if (state.responseActive) { try { log('create.skipped active'); } catch {}; return false; }
     const voice = audioVoice || getSelectedVoice();
     const payload = {
       type: 'response.create',
@@ -1432,6 +1429,7 @@
       try {
         const b64 = msg.delta || msg.audio || msg.bytes || msg.data || '';
         if (typeof b64 === 'string' && b64.length) {
+          if (!state.responseActive) { state.responseActive = true; try { log('response.begin'); } catch {} }
           const bin = atob(b64);
           const i16 = new Int16Array(bin.length / 2);
           for (let i = 0; i < i16.length; i++) {
@@ -1481,13 +1479,13 @@
         try { window.__qvtSession.lastType = 'session.started'; } catch {}
         startDiagPinger();
         if (FF.ui_pills) updateUiPills();
-        queueInitialGreeting();
+        if (FF.smoke) queueInitialGreeting();
         break;
       }
       case 'session.audio_status':
         if (msg.input_sample_rate_hz) state.serverInHz = msg.input_sample_rate_hz;
         log('<= audio_status', `in=${msg.input_sample_rate_hz} out=${msg.output_sample_rate_hz}`);
-        queueInitialGreeting();
+        if (FF.smoke) queueInitialGreeting();
         break;
       case 'personalized_greeting':
         log('<= greeting', JSON.stringify(msg).slice(0, 160));
@@ -1692,7 +1690,7 @@
       case 'response.audio.done':
       case 'response.output_audio.done':
       case 'response.done':
-        log('<=', t);
+        log('response.end');
         try { if (state.ttsGainNode) state.ttsGainNode.gain.value = 1.0; } catch {}
         state.responseActive = false;
         state.partialActive = false;
@@ -1737,21 +1735,13 @@
             setTtsGain(1.0);
           }
         }
-        // Optional auto-commit flow on silence
+        // Optional auto-commit flow on silence (gated by ≥5 frames)
         if (t === 'input_audio_buffer.speech_ended' && $('autoCommit')?.checked) {
-          try {
-            if ((state.msSinceLastCommit||0) >= commitWindowMs()) {
-              if (sendAudioCommit('inactivity')) {
-                if (!state.responseActive) {
-                  state.ws.send(JSON.stringify({ type: 'response.create' }));
-                }
-              }
-            }
-          } catch {}
+          try { if (sendAudioCommit('inactivity')) log('auto-commit (speech_ended)'); } catch {}
         }
         break;
       case 'input_audio_buffer.committed':
-        try { state.msSinceLastCommit = 0; } catch {}
+        // No-op: counters reset on our own commit helper
         break;
       default:
         // Keep concise, but log unknown types (more verbose in diag)
@@ -1875,22 +1865,31 @@
   function sendAudioCommit(reason = 'auto') {
     if (!state.ws || state.ws.readyState !== 1) return false;
     clearIdleCommit();
+    // Block commits while a response is actively speaking (no barge-in by default)
+    if (state.responseActive) {
+      try { log('commit.skipped responseActive'); } catch {}
+      return false;
+    }
+    // Enforce ≥100ms of buffered audio (≥5 frames of 20ms)
+    if (framesSinceCommit < 5 || msSinceLastCommit < 100) {
+      try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
+      return false;
+    }
     if (FF.barge_in && state.tailPadNeeded) {
       sendTailPad();
       state.tailPadNeeded = false;
     }
     try {
       state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
-      state.msSinceLastCommit = 0;
+      // Reset gating counters
+      framesSinceCommit = 0;
+      msSinceLastCommit = 0;
       state.appendsSinceCommit = 0;
       state.lastCommitReason = reason;
       if (FF.barge_in) {
         clearBargeResumeTimer();
-        if (state.bargeInActive) {
-          resumeBarge('cancel');
-        } else {
-          setTtsGain(1.0);
-        }
+        // Resume TTS after commit rather than cancel unless user explicitly stops
+        if (state.bargeInActive) resumeBarge('resume'); else setTtsGain(1.0);
         state.tailPadNeeded = false;
       }
       return true;
@@ -1924,6 +1923,9 @@
         window.__qvtSession = Object.assign(window.__qvtSession || {}, { sendPath: resolvedSendPath });
       } catch {}
       scheduleIdleCommit('frame');
+      // Each append is one 20ms frame at 24k; track commit gating
+      framesSinceCommit += 1;
+      msSinceLastCommit += 20;
       state.appendsSinceCommit = (state.appendsSinceCommit || 0) + 1;
       return true;
     } catch (err) {
@@ -2044,7 +2046,6 @@
               metrics.sentBytesAudio += pcmBuf.byteLength;
               state.lastAudioSentAt = Date.now();
               renderMetrics();
-              state.msSinceLastCommit = (state.msSinceLastCommit || 0) + Math.round((chunk.length / (state.serverInHz || 24000)) * 1000);
               if (metrics.sentAppends <= 3 || metrics.sentAppends % 50 === 0) {
                 let peak = 0, sum = 0;
                 for (let i = 0; i < chunk.length; i++) { const a = Math.abs(chunk[i]); peak = Math.max(peak, a); sum += a * a; }
@@ -2059,10 +2060,10 @@
         try { if (state.stragglerTimer) clearTimeout(state.stragglerTimer); } catch {}
         state.stragglerTimer = setTimeout(() => {
           try {
-            if ((state.msSinceLastCommit || 0) >= commitWindowMs()) {
-              if (sendAudioCommit('straggler')) {
-                log('auto-commit (straggler flush)');
-              }
+            if (framesSinceCommit >= 5) {
+              if (sendAudioCommit('straggler')) log('auto-commit (straggler flush)');
+            } else {
+              try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
             }
           } catch {}
         }, 30);
