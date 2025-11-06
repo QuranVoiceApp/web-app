@@ -2,7 +2,10 @@
   if (!('serviceWorker' in navigator)) return;
   const logSw = (...args) => { try { console.info('[sw]', ...args); } catch {} };
   const setSwBlocked = (flag) => { try { window.__qvtSwBlocked = !!flag; } catch {} };
-  const disableServiceWorker = true;
+  // Gate SW auto-unregister behind ?qa=1 so prod users keep SW behavior.
+  const params = new URLSearchParams(location.search);
+  const qa = (params.get('qa') || '').toLowerCase();
+  const disableServiceWorker = qa === '1' || qa === 'true';
 
   const cleanup = () => {
     const dereg = (navigator.serviceWorker.getRegistrations?.() || Promise.resolve([]))
