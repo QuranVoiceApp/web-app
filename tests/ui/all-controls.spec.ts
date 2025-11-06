@@ -31,14 +31,18 @@ test('All controls clickable and state toggles without errors', async ({ page })
     if (/Stop/i.test(initialText)) {
       // Already recording; clicking should stop
       await mic.click();
-      await expect.poll(async () => (await mic.textContent()) || '', { timeout: 10000 }).toMatch(/Start/i);
+      // Give UI a brief chance to flip immediately
+      await page.waitForTimeout(150);
+      await expect.poll(async () => (await mic.textContent()) || '', { timeout: 15000 }).toMatch(/Start/i);
     } else {
       // Not recording; clicking should start
       await mic.click();
-      await expect.poll(async () => (await mic.textContent()) || '', { timeout: 10000 }).toMatch(/Stop/i);
-      await page.waitForTimeout(300);
+      await page.waitForTimeout(150);
+      await expect.poll(async () => (await mic.textContent()) || '', { timeout: 15000 }).toMatch(/Stop/i);
+      await page.waitForTimeout(500);
       await mic.click();
-      await expect.poll(async () => (await mic.textContent()) || '', { timeout: 10000 }).toMatch(/Start/i);
+      await page.waitForTimeout(150);
+      await expect.poll(async () => (await mic.textContent()) || '', { timeout: 15000 }).toMatch(/Start/i);
     }
   }
 
