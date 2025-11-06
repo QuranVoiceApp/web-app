@@ -1,4 +1,15 @@
 (function bootstrapQVT() {
+  try {
+    const params = new URLSearchParams(location.search);
+    const qa = (params.get('qa') || '').toLowerCase();
+    const isQA = qa === '1' || qa === 'true';
+    if (isQA) {
+      window.__qvtQA = true;
+      window.addEventListener('DOMContentLoaded', () => {
+        try { const el = document.getElementById('qaModeBanner'); if (el) el.style.display = 'block'; } catch {}
+      }, { once: true });
+    }
+  } catch {}
   const scriptsInOrder = [
     './scripts/dsp_fir.js',
     './scripts/watchdog.js',
