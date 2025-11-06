@@ -4,10 +4,7 @@ const BASE = process.env.BASE_URL ?? 'https://app.asimo.io/index.html';
 const V = process.env.BUILD_V ?? String(Date.now()).slice(-7);
 
 test.describe('Transcript ↔ audio greeting match (sim path)', () => {
-  test('sim_input greeting speaks and transcript contains greeting text', async ({ page }, testInfo) => {
-    if (process.env.CI && testInfo.project.name === 'chromium') {
-      test.skip(true, 'Flaky on Chromium CI; validated via other suites and WebKit');
-    }
+  test('sim_input greeting speaks and transcript contains greeting text', async ({ page }) => {
     const url = `${BASE}?ff=seq_json,ui_pills,sim_input&diag=1&auto=1&v=${V}`;
     await page.goto(url, { waitUntil: 'domcontentloaded' });
 
