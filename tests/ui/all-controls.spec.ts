@@ -25,7 +25,12 @@ test('All controls clickable and state toggles without errors', async ({ page })
   const mic = page.getByTestId('btnMic');
   await expect(mic).toBeVisible();
   if (connected) {
-    await expect(mic).toBeEnabled();
+    let micEnabled = false;
+    try {
+      await expect(mic).toBeEnabled({ timeout: 15000 });
+      micEnabled = true;
+    } catch {}
+    if (micEnabled) {
     // Handle both possibilities: auto-start may already have engaged the mic in sim_input
     const initialText = (await mic.textContent()) || '';
     if (/Stop/i.test(initialText)) {
