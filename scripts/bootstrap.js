@@ -1,4 +1,14 @@
 (function bootstrapQVT() {
+  try {
+    const params = new URLSearchParams(location.search);
+    const qa = (params.get('qa') || '').toLowerCase();
+    if (qa === '1' || qa === 'true') {
+      const banner = document.getElementById('qaModeBanner');
+      if (banner) banner.style.display = 'block';
+      (window.__qvtFlags ||= {}).qa = true;
+    }
+  } catch {}
+
   const scriptsInOrder = [
     './scripts/dsp_fir.js',
     './scripts/watchdog.js',
