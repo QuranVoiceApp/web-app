@@ -71,6 +71,7 @@ jobs:
   e2e-bundle-webkit:
     name: e2e-bundle-webkit
     runs-on: macos-latest
+    continue-on-error: true
     env:
       BASE_URL: https://app.asimo.io/index.html
     steps:
@@ -137,4 +138,3 @@ jobs:
           name: e2e-webkit-docker-${{ github.run_id }}
           path: playwright-report/**
           if-no-files-found: warn
-

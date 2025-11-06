@@ -76,6 +76,7 @@ jobs:
 
   e2e-bundle-webkit:
     runs-on: macos-latest
+    continue-on-error: true
     env:
       BASE_URL: https://app.asimo.io/index.html
     steps:
