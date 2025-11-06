@@ -2686,6 +2686,43 @@
       await calibrateAmbient(analyser);
       setupDiagnostics(ctx, analyser, stream);
       startVisualizer();
+      // Post-start silent stream probe: if nz% stays ~0, try a simpler constraint set once
+      try {
+        if (!FORCE_SIM) {
+          if (!state._probeTimer) {
+            state._probeTimer = setTimeout(async () => {
+              try {
+                const nzPct = metrics.totalSamples ? Math.round((metrics.nzSamples / metrics.totalSamples) * 100) : 0;
+                if ((nzPct < 1) && !state.__probeFallbackTried) {
+                  const warn = $('silenceWarn'); if (warn) { warn.style.display = ''; warn.textContent = 'Mic stream is silent (0%). Change input above or check OS/site mic settings.'; }
+                  state.__probeFallbackTried = true;
+                  log('probe.fallback', 'nz% < 1; retrying with plain {audio:true}');
+                  try { stopMic(); } catch {}
+                  try {
+                    const stream2 = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                    // If we got a stream, rebuild capture path quickly
+                    const ctx2 = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+                    const source2 = ctx2.createMediaStreamSource(stream2);
+                    const out = await configureCapture(ctx2, source2, { monitor: undefined });
+                    await unlockIOSAudio(ctx2);
+                    state.processor = out.processor;
+                    state.audioContext = ctx2;
+                    state.mediaStream = stream2;
+                    state.analyser = out.analyser;
+                    state.micActive = true;
+                    $('btnMic').textContent = 'Stop Mic';
+                    log('Mic re-started (fallback)');
+                    startVisualizer();
+                  } catch (e) {
+                    log('probe.fallback.error', e?.message || e);
+                  }
+                }
+              } catch {}
+              finally { try { clearTimeout(state._probeTimer); } catch {}; state._probeTimer = null; }
+            }, 1500);
+          }
+        }
+      } catch {}
       if (diag && stream && !FORCE_SIM) {
         try { await autoRecordAnalyse(stream, 5000); } catch (err) { log('autoRecord error', err.message || err); }
       }
