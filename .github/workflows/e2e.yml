@@ -16,7 +16,8 @@ jobs:
       - run: npm ci || npm i --no-audit --no-fund
       - run: npx playwright install --with-deps
       - run: npx playwright test --project=chromium --reporter=list,html --trace on
-      - if: always()
+      - name: upload artifacts (chromium)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report-chromium
@@ -25,14 +26,21 @@ jobs:
       - name: Backend metrics gate (prod)
         run: |
           set -e
-          json=$(curl -fsSL https://quran.asimo.io/api/metrics/health)
-          read empty deferred underrun <<EOF
-          $(echo "$json" | jq -r '.metrics // .counters | "\(.empty_commit_total // 0) \(.deferred_commit_total // 0) \(.tts_underrun_total // 0)"')
-          EOF
+          curl -fsSL https://quran.asimo.io/api/metrics/health -o slo-metrics.json
+          empty=$(jq -r '.metrics // .counters | (.empty_commit_total // 0)' slo-metrics.json)
+          deferred=$(jq -r '.metrics // .counters | (.deferred_commit_total // 0)' slo-metrics.json)
+          underrun=$(jq -r '.metrics // .counters | (.tts_underrun_total // 0)' slo-metrics.json)
           if [ "$empty" != "0" ]; then echo "empty_commit_total != 0: $empty"; exit 1; fi
           if [ "$underrun" != "0" ]; then echo "tts_underrun_total != 0: $underrun"; exit 1; fi
           if [ "$deferred" -le 0 ]; then echo "deferred_commit_total <= 0: $deferred"; exit 1; fi
-          echo "Metrics gate OK: empty_commit_total=$empty deferred_commit_total=$deferred tts_underrun_total=$underrun"
+          echo "✅ Metrics gate OK — empty: $empty, deferred: $deferred, tts_underrun: $underrun" >> "$GITHUB_STEP_SUMMARY"
+      - name: upload slo metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slo-metrics.json
+          path: slo-metrics.json
+          if-no-files-found: warn
 
   e2e-webkit:
     runs-on: macos-latest
@@ -47,7 +55,8 @@ jobs:
       - run: npm ci || npm i --no-audit --no-fund
       - run: npx playwright install --with-deps
       - run: npx playwright test --project=webkit --reporter=list,html --trace on --retries=2
-      - if: always()
+      - name: upload artifacts (webkit)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report-webkit

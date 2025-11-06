@@ -1,0 +1,13 @@
+name: Deploy (Nightly)
+
+on:
+  schedule:
+    - cron: '0 05 * * *'
+  workflow_dispatch:
+
+jobs:
+  call-deploy:
+    uses: ./.github/workflows/deploy-reusable.yml
+    with:
+      ref: main
+
