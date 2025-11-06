@@ -81,6 +81,40 @@ jobs:
           name: e2e-webkit-${{ github.run_id }}
           path: playwright-report/**
           if-no-files-found: warn
+
+  e2e-webkit-docker:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    container:
+      image: mcr.microsoft.com/playwright:v1.48.2-jammy
+      options: --ipc=host
+    env:
+      BASE_URL: https://app.asimo.io/index.html
+      HOME: /root
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: install dependencies (in container)
+        run: |
+          npm ci || npm i --no-audit --no-fund
+          npx playwright install webkit
+      - name: run e2e matrix (WebKit Docker, non-blocking)
+        run: |
+          npx playwright test \
+            tests/ui_pills.spec.ts \
+            tests/ui/all-controls.spec.ts \
+            tests/playback.spec.ts \
+            tests/transcript_match.spec.ts \
+            tests/bargein.spec.ts \
+            tests/jitter_buffer.spec.ts \
+            --reporter=line,html --trace on --retries=2 --project=webkit
+      - name: upload e2e artifacts (WebKit Docker)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-webkit-docker-${{ github.run_id }}
+          path: playwright-report/**
+          if-no-files-found: warn
   phase2-unit:
     runs-on: ubuntu-latest
     steps:
