@@ -1,3 +1,4 @@
+let isConnected=false; let connectBtn=null; function setConnected(v){ isConnected=!!v; if(connectBtn){ connectBtn.textContent = isConnected ? "Disconnect" : "Connect"; connectBtn.classList.toggle("connected", isConnected);} }
 (() => {
   if (typeof window !== 'undefined') {
     try {
@@ -332,7 +333,7 @@
       state.idleCommitTimer = null;
       if (state.ws && state.ws.readyState === 1) {
         const need = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
-        if (!state.responseActive && bytesSinceCommit >= need && (metrics.sentAppends||0)>0) {
+        if (!state.responseActive && bytesSinceCommit >= need && (metrics.sentAppends||0) > 0) {
           if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${bytesSinceCommit} need=${need}`);
         }
       }
@@ -358,7 +359,7 @@
           const need = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
           const bytesOk = bytesSinceCommit >= need;
           if (ageOk && framesOk && bytesOk && (metrics.sentAppends||0) > 0) {
-            if (sendAudioCommit('inactivity')) log('auto-commit (inactivity)');
+            if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${bytesSinceCommit} need=${need}`);
           } else if (!framesOk) {
             try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
           } else if (!bytesOk) {
@@ -1842,11 +1843,11 @@
             setTtsGain(1.0);
           }
         }
-        // Optional auto-commit flow on silence (gated by ≥5 frames)
+        // Optional auto-commit flow on silence — allow >= ~96ms on speech stop, else wait
         if (t === 'input_audio_buffer.speech_ended' && $('autoCommit')?.checked) {
           try {
             // Allow slightly lower threshold on explicit speech stop (>= ~96ms / 4608B)
-            const tol = 4608;
+            const tol = 4608; // ~96ms @ 24k/pcm16
             const need = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
             if (bytesSinceCommit >= tol) {
               if (bytesSinceCommit < need) commitRequiredBytes = need; // future commits use stricter floor
@@ -1993,9 +1994,13 @@
       try { log('commit.skipped responseActive'); } catch {}
       return false;
     }
+<<<<<<< HEAD
     // Guard empties
     if (bytesSinceCommit <= 0) { try { log('commit.suppressed', 'reason=empty have=0 need=' + Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)); } catch {} ; return false; }
     // Enforce ≥120ms/5760B by default; allow server-raised threshold via commitRequiredBytes
+=======
+    // Enforce ≥100ms of buffered audio (≥5 frames of 20ms) AND ≥4800B appended
+>>>>>>> origin/main
     if (framesSinceCommit < MIN_COMMIT_FRAMES || msSinceLastCommit < MIN_COMMIT_MS || bytesSinceCommit < Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)) {
       try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
       if (bytesSinceCommit < MIN_COMMIT_BYTES) { try { log(`commit.skipped bytes=${bytesSinceCommit}`); } catch {} }
@@ -2198,11 +2203,10 @@
         try { if (state.stragglerTimer) clearTimeout(state.stragglerTimer); } catch {}
         state.stragglerTimer = setTimeout(() => {
           try {
-            if (framesSinceCommit >= 5 && bytesSinceCommit >= MIN_COMMIT_BYTES) {
-              if (sendAudioCommit('straggler')) log('auto-commit (straggler flush)');
+            if (framesSinceCommit >= MIN_COMMIT_FRAMES && bytesSinceCommit >= Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)) {
+              if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${bytesSinceCommit} need=${Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)}`);
             } else {
-              try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
-              if (bytesSinceCommit < MIN_COMMIT_BYTES) { try { log(`commit.skipped bytes=${bytesSinceCommit}`); } catch {} }
+              try { log(`commit.suppressed reason=straggler have=${bytesSinceCommit} need=${MIN_COMMIT_BYTES}`); } catch {}
             }
           } catch {}
         }, 30);
@@ -2926,7 +2930,7 @@
     try {
       const blob = new Blob([logBuffer.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob); a.download = `qvt-log-${Date.now()}.txt`; a.click();
+      a.href = URL.createObjectURL(blob); a.download = `qvt-log-${Date.now()}.txt`; aif(window.ASIMO_SETTINGS && ASIMO_SETTINGS.autoDownload){ .click(); }
       setTimeout(() => URL.revokeObjectURL(a.href), 3000);
     } catch {}
   }));
@@ -3407,3 +3411,13 @@
       state.audioUnlockPending = true;
     }
   }
+window.__asimoConnect = async function(){
+  // Open WS → send session.update → start mic tracks
+  const mode = (window.ASIMO_SETTINGS && ASIMO_SETTINGS.recitationMode) ? "quran_recitation" : "default";
+  const requested_vad_mode = (window.ASIMO_SETTINGS && ASIMO_SETTINGS.useServerVAD) ? "server" : "client";
+  // Example: ensure first session.update carries requested_vad_mode + mode
+  // if (window.ws) { ws.send(JSON.stringify({ type:"session.update", session:{ requested_vad_mode, mode } })); }
+};
+window.__asimoDisconnect = async function(){
+  // Stop mic tracks, close peer connection / websocket
+};
