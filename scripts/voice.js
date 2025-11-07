@@ -1320,6 +1320,8 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
           silence_ms: 350,
         };
         const voiceChoice = getSelectedVoice();
+        const mode = (window.ASIMO_SETTINGS && ASIMO_SETTINGS.recitationMode) ? "quran_recitation" : "default";
+        const requested_vad_mode = (window.ASIMO_SETTINGS && ASIMO_SETTINGS.useServerVAD) ? "server" : "client";
         const sessionUpdate = {
           type: 'session.update',
           session: {
@@ -1327,6 +1329,8 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
             turn_detection: turnDetectionPayload,
             input_audio_format: { type: 'pcm16', channels: 1, sample_rate: 24000 },
             output_audio_format: { type: 'pcm16', channels: 1, sample_rate: 24000 },
+            requested_vad_mode: requested_vad_mode,
+            mode: mode,
           }
         };
         try {
@@ -2926,7 +2930,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
     try {
       const blob = new Blob([logBuffer.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob); a.download = `qvt-log-${Date.now()}.txt`; aif(window.ASIMO_SETTINGS && ASIMO_SETTINGS.autoDownload){ .click(); }
+      a.href = URL.createObjectURL(blob); a.download = `qvt-log-${Date.now()}.txt`; if(window.ASIMO_SETTINGS && ASIMO_SETTINGS.autoDownload){ a.click(); }
       setTimeout(() => URL.revokeObjectURL(a.href), 3000);
     } catch {}
   }));
