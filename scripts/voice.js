@@ -156,6 +156,14 @@
     try { window.__qvtTest._markReady(); } catch {}
   };
 
+  function updateMuteTestid() {
+    try {
+      const el = document.getElementById('muteState');
+      const a = document.getElementById('qvtOut');
+      if (el && a) el.textContent = a.muted ? 'muted' : 'unmuted';
+    } catch {}
+  }
+
   const emitVersionBanner = () => {
     const fallback = `QVT web dev (${new Date().toISOString().slice(0, 10)})`;
     const logBanner = (msg, meta = {}) => {
@@ -246,6 +254,7 @@
       const outEl = $('qvtOut');
       if (outEl) {
         outEl.muted = false;
+        updateMuteTestid();
         outEl.volume = 1;
         const playPromise = outEl.play?.();
         if (playPromise && typeof playPromise.catch === 'function') playPromise.catch(() => {});
@@ -432,6 +441,7 @@
     const el = ensureOutputElement();
     if (el) {
       try { el.muted = false; } catch {}
+      updateMuteTestid();
       try {
         const playPromise = el.play();
         if (playPromise && typeof playPromise.catch === 'function') playPromise.catch(() => {});
@@ -1041,6 +1051,7 @@
           outEl.setAttribute('playsinline', '');
           outEl.autoplay = true;
           if (!state.audioUnlocked) outEl.muted = true;
+          updateMuteTestid();
           state.outEl = outEl;
           state.sinkEl = outEl;
           if (state.outputSupported && state.speakerId && typeof outEl.setSinkId === 'function') {
@@ -1389,6 +1400,7 @@
           state.recvAudioChunks = 0;
           if (state.outEl) {
             try { state.outEl.muted = true; } catch {}
+            updateMuteTestid();
             try { state.outEl.srcObject = null; } catch {}
           }
           state.sinkDest = null;
@@ -1680,6 +1692,7 @@
         const b64 = msg.delta || msg.audio || msg.data || msg.chunk || msg.output_audio_chunk;
         if (state.outEl && state.audioUnlocked) {
           try { state.outEl.muted = false; } catch {}
+          updateMuteTestid();
         }
         if (b64 && typeof b64 === 'string') {
           const { f32 } = base64ToFloat32(b64, msg.sample_rate_hz || 24000);
@@ -3303,6 +3316,7 @@
     if (outEl) {
       try {
         outEl.muted = false;
+        updateMuteTestid();
         const playPromise = outEl.play();
         if (playPromise && typeof playPromise.catch === 'function') {
           playPromise.catch(() => {});
