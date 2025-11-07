@@ -18,7 +18,8 @@ export default defineConfig({
     ignoreHTTPSErrors: true,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
-    video: 'retain-on-failure',
+    // Always capture video to guarantee acceptance clip presence
+    video: 'on',
     recordHar: { mode: 'minimal', path: 'playwright-report/har.har' },
   },
   projects: [

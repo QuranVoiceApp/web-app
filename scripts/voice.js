@@ -13,12 +13,15 @@
   let storageEnabled = true;
   const $ = (id) => document.getElementById(id);
 
+  function appendLog(line) {
+    try {
+      const el = $('log');
+      if (el) { el.value += line + "\n"; el.scrollTop = el.scrollHeight; }
+    } catch {}
+  }
   const log = (...args) => {
     const line = `[${new Date().toLocaleTimeString()}] ${args.join(' ')}`;
-    const el = $('log');
-    if (el) {
-      try { el.value += line + "\n"; el.scrollTop = el.scrollHeight; } catch {}
-    }
+    appendLog(line);
     try { console.log(...args); } catch {}
     try { logBuffer.push(line); } catch {}
   };
@@ -199,6 +202,7 @@
   };
 
   const diag = FF.diag || urlParams.get('debug') === 'verbose';
+  const debugBeep = urlParams.get('debug_beep') === '1';
 
   emitVersionBanner();
   log('flags', activeFlags || 'none');
@@ -764,7 +768,11 @@
     if (state.ws && state.ws.readyState === 1 && mode === 'resume') {
       try { state.ws.send(JSON.stringify({ type: 'response.resume_audio' })); } catch {}
     } else if (state.ws && state.ws.readyState === 1 && mode === 'cancel') {
-      try { state.ws.send(JSON.stringify({ type: 'response.cancel' })); } catch {}
+      if (state.responseActive === true) {
+        try { state.ws.send(JSON.stringify({ type: 'response.cancel' })); } catch {}
+      } else {
+        log('cancel.skipped no-active-response');
+      }
       state.cancelEvents += 1;
     }
     if (state.bargeDuckAt) {
@@ -2718,6 +2726,21 @@
       await calibrateAmbient(analyser);
       setupDiagnostics(ctx, analyser, stream);
       startVisualizer();
+      // Optional chirp to verify output routing (100ms @ 1kHz)
+      try {
+        if (debugBeep && state.playCtx) {
+          const osc = state.playCtx.createOscillator();
+          const g = state.playCtx.createGain();
+          osc.frequency.value = 1000;
+          g.gain.value = 0.2;
+          osc.connect(g);
+          if (state.sinkDest) g.connect(state.sinkDest);
+          else g.connect(state.playCtx.destination);
+          const t0 = state.playCtx.currentTime;
+          osc.start(t0);
+          osc.stop(t0 + 0.10);
+        }
+      } catch {}
       // Post-start silent stream probe: if nz% stays ~0, try a simpler constraint set once
       try {
         if (!FORCE_SIM) {
@@ -3233,6 +3256,20 @@
         const x = i * (sp.width / bars);
         spc.fillRect(x, sp.height - h, (sp.width / bars) - 2, h);
       }
+      // Overlay output analyser RMS as a thin bar at bottom
+      try {
+        const oa = state.outAnalyser;
+        if (oa) {
+          const tmp = new Float32Array(oa.fftSize);
+          oa.getFloatTimeDomainData(tmp);
+          let sum = 0; for (let i=0;i<tmp.length;i++){ const s=tmp[i]; sum += s*s; }
+          const rms = Math.sqrt(sum / Math.max(1,tmp.length));
+          state._outRms = rms;
+          const outH = Math.min(1, rms*8) * 6; // tiny bar
+          spc.fillStyle = '#3fa8ff';
+          spc.fillRect(0, sp.height-2-outH, sp.width, outH);
+        }
+      } catch {}
       state.visRaf = requestAnimationFrame(draw);
     };
     if (state.visRaf) cancelAnimationFrame(state.visRaf);
