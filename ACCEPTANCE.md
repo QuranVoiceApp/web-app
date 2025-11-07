@@ -23,3 +23,28 @@ Acceptance Checklist
   - Keep WebKit non‑blocking until 3× consecutive greens. When reached, restore gating and re‑require transcript_match on WebKit via a follow‑up PR.
   - SLO gate: empty_commit_total=0, tts_underrun_total=0, deferred_commit_total>0.
 
+\nCurrent build
+- Short SHA: 692771c
+- QA URLs:
+  - https://app.asimo.io/?ff=seq_json,ui_pills,sim_input&diag=1&auto=1&v=692771c
+  - https://app.asimo.io/?ff=barge_in,seq_json,sim_input,ui_pills&diag=1&auto=1&v=692771c
+\nArtifact video subpaths
+- Run 19158108932: data/1c5be158007dba0e04407b31f1fea7119c6cdd94.webm
+- Run 19158250655: data/1f01cf3f115f41dd8fa04a83ccd326bdcf9e55f6.webm
+\nConsole excerpt (last 15 lines)
+[<=] session.audio_status@v1
+[<=] personalized_greeting@v1
+[<=] session.created
+[=>] commit(initial)
+[<=] session.updated@v1
+[<=] session.updated@v1
+[<=] session.updated@v1
+[<=] session.updated@v1
+[<=] session.updated@v1
+[<=] session.updated
+[<=] session.updated
+[<=] response.created
+[<=] response.done
+[turn] done in 1183 ms
+[=>] commit(barge)
+\nServer log excerpt
