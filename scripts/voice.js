@@ -57,9 +57,11 @@
     } catch {}
   };
 
-  const wsUrl = (window.Env && window.Env.WS_URL) || 'wss://quran.asimo.io/realtime/v1/ws';
-  try { const elWs = $('wsUrl'); if (elWs) elWs.textContent = wsUrl; } catch {}
+  // URL params early so we can honor ws override
   const urlParams = new URLSearchParams(location.search);
+  const wsOverride = urlParams.get('ws') || urlParams.get('ws_url');
+  const wsUrl = wsOverride || ((window.Env && window.Env.WS_URL) || 'wss://quran.asimo.io/realtime/v1/ws');
+  try { const elWs = $('wsUrl'); if (elWs) elWs.textContent = wsUrl; } catch {}
   const ffTokens = (urlParams.get('ff') || '').split(',').filter(Boolean);
   const FF = (() => {
     const set = new Set(ffTokens);
