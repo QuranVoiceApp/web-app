@@ -1869,6 +1869,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
         // Reset commit gating counters when server clears buffer
         framesSinceCommit = 0;
         msSinceLastCommit = 0;
+        bytesSinceCommit = 0;
         break;
       }
       default:
@@ -2696,6 +2697,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
       // Reset commit gating counters at mic start
       framesSinceCommit = 0;
       msSinceLastCommit = 0;
+      bytesSinceCommit = 0;
       let ctx;
       let source;
       let stream = null;
