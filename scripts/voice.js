@@ -1,3 +1,4 @@
+let isConnected=false; let connectBtn=null; function setConnected(v){ isConnected=!!v; if(connectBtn){ connectBtn.textContent = isConnected ? "Disconnect" : "Connect"; connectBtn.classList.toggle("connected", isConnected);} }
 (() => {
   if (typeof window !== 'undefined') {
     try {
@@ -2915,7 +2916,7 @@
     try {
       const blob = new Blob([logBuffer.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob); a.download = `qvt-log-${Date.now()}.txt`; a.click();
+      a.href = URL.createObjectURL(blob); a.download = `qvt-log-${Date.now()}.txt`; aif(window.ASIMO_SETTINGS && ASIMO_SETTINGS.autoDownload){ .click(); }
       setTimeout(() => URL.revokeObjectURL(a.href), 3000);
     } catch {}
   }));
@@ -3396,3 +3397,13 @@
       state.audioUnlockPending = true;
     }
   }
+window.__asimoConnect = async function(){
+  // Open WS → send session.update → start mic tracks
+  const mode = (window.ASIMO_SETTINGS && ASIMO_SETTINGS.recitationMode) ? "quran_recitation" : "default";
+  const requested_vad_mode = (window.ASIMO_SETTINGS && ASIMO_SETTINGS.useServerVAD) ? "server" : "client";
+  // Example: ensure first session.update carries requested_vad_mode + mode
+  // if (window.ws) { ws.send(JSON.stringify({ type:"session.update", session:{ requested_vad_mode, mode } })); }
+};
+window.__asimoDisconnect = async function(){
+  // Stop mic tracks, close peer connection / websocket
+};
