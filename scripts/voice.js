@@ -201,7 +201,7 @@
     }
   };
 
-  const diag = FF.diag || urlParams.get('debug') === 'verbose';
+  const diag = FF.diag || urlParams.get('debug') === 'verbose' || urlParams.get('debug') === '1' || urlParams.get('debug') === 'true';
   const debugBeep = urlParams.get('debug_beep') === '1';
 
   emitVersionBanner();
@@ -332,8 +332,8 @@
       state.idleCommitTimer = null;
       if (state.ws && state.ws.readyState === 1) {
         const need = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
-        if (!state.responseActive && bytesSinceCommit >= need && sendAudioCommit(reason)) {
-          log('auto-commit (idle)', reason);
+        if (!state.responseActive && bytesSinceCommit >= need && (metrics.sentAppends||0) > 0) {
+          if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${bytesSinceCommit} need=${need}`);
         }
       }
     }, IDLE_COMMIT_MS);
@@ -358,7 +358,7 @@
           const need = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
           const bytesOk = bytesSinceCommit >= need;
           if (ageOk && framesOk && bytesOk && (metrics.sentAppends||0) > 0) {
-            if (sendAudioCommit('inactivity')) log('auto-commit (inactivity)');
+            if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${bytesSinceCommit} need=${need}`);
           } else if (!framesOk) {
             try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
           } else if (!bytesOk) {
@@ -1842,9 +1842,18 @@
             setTtsGain(1.0);
           }
         }
-        // Optional auto-commit flow on silence (gated by ≥5 frames)
+        // Optional auto-commit flow on silence — allow >= ~96ms on speech stop, else wait
         if (t === 'input_audio_buffer.speech_ended' && $('autoCommit')?.checked) {
-          try { if (sendAudioCommit('inactivity')) log('auto-commit (speech_ended)'); } catch {}
+          try {
+            const tol = 4608; // ~96ms @ 24k/pcm16
+            const need = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
+            if (bytesSinceCommit >= tol) {
+              if (bytesSinceCommit < need) commitRequiredBytes = need;
+              if (sendAudioCommit('speech_stop')) log('commit(reason=speech_stop)', `have=${bytesSinceCommit} need=${need}`);
+            } else {
+              log('commit.suppressed', `reason=speech_stop have=${bytesSinceCommit} need=${tol}`);
+            }
+          } catch {}
         }
         break;
       case 'input_audio_buffer.committed':
@@ -2184,11 +2193,10 @@
         try { if (state.stragglerTimer) clearTimeout(state.stragglerTimer); } catch {}
         state.stragglerTimer = setTimeout(() => {
           try {
-            if (framesSinceCommit >= 5 && bytesSinceCommit >= MIN_COMMIT_BYTES) {
-              if (sendAudioCommit('straggler')) log('auto-commit (straggler flush)');
+            if (framesSinceCommit >= MIN_COMMIT_FRAMES && bytesSinceCommit >= Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)) {
+              if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${bytesSinceCommit} need=${Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)}`);
             } else {
-              try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
-              if (bytesSinceCommit < MIN_COMMIT_BYTES) { try { log(`commit.skipped bytes=${bytesSinceCommit}`); } catch {} }
+              try { log(`commit.suppressed reason=straggler have=${bytesSinceCommit} need=${MIN_COMMIT_BYTES}`); } catch {}
             }
           } catch {}
         }, 30);
