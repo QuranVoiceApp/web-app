@@ -44,7 +44,9 @@
     <script src="./scripts/bootstrap.js?v=bootstrap3" defer></script>
   </head>
   <body>
+    <div id="qaModeBanner" style="display:none;background:#3fa8ff;color:#001826;padding:8px 12px;text-align:center;font-weight:600">QA mode active</div>
     <div id="swBanner" role="status" aria-live="polite">A service worker update is pending. Please reload to apply the latest build.</div>
+    <span id="muteState" data-testid="muteState" style="display:none">unknown</span>
     <div id="bootBanner" role="status" aria-live="assertive" style="display:none;background:#ff6b6b;color:#000;padding:10px 16px;text-align:center;font-size:14px;">Boot error: duplicate scripts detected. Reload the page.</div>
     <div id="qaModeBanner" role="status" aria-live="polite" style="display:none;background:#3fa8ff;color:#001b33;padding:8px 12px;text-align:center;font-size:13px;">QA mode active</div>
     <div id="iosUnlock" role="dialog" aria-modal="true">
@@ -167,5 +169,27 @@
         <p class="muted">This page streams audio to the backend Realtime proxy, which talks to the OpenAI Realtime API.</p>
       </section>
     </main>
+  <script src="scripts/settings.js"></script>
+  <style id="asimo-webapp-fixes">
+    .connected{ background:#c62828 !important; color:#fff !important; }
+    .click-through{ pointer-events:none !important; }
+  </style>
+  <button id="settingsGear" style="position:fixed;top:8px;right:8px;z-index:9999">⚙️</button>
+  <div id="settingsPanel" style="position:fixed;top:40px;right:8px;background:#111;color:#eee;padding:10px;border-radius:8px;display:none;z-index:9999">
+    <label><input type="checkbox" id="useServerVAD"> Use server VAD</label><br>
+    <label><input type="checkbox" id="recitationMode"> Recitation mode</label><br>
+    <label><input type="checkbox" id="autoDownload"> Auto-download audio</label><br>
+  </div>
+  <script>
+   (function(){
+     const gear=document.getElementById(settingsGear); const panel=document.getElementById(settingsPanel);
+     if(!gear||!panel) return;
+     gear.addEventListener(click,()=>{ panel.style.display = (panel.style.display===none?block:none); });
+     const chk=(id, get, set)=>{ const el=document.getElementById(id); if(!el) return; el.checked = get(); el.addEventListener(change,()=>set(el.checked)); };
+     chk(useServerVAD, ()=>ASIMO_SETTINGS.useServerVAD, v=>ASIMO_SETTINGS.useServerVAD=v);
+     chk(recitationMode, ()=>ASIMO_SETTINGS.recitationMode, v=>ASIMO_SETTINGS.recitationMode=v);
+     chk(autoDownload, ()=>ASIMO_SETTINGS.autoDownload, v=>ASIMO_SETTINGS.autoDownload=v);
+   })();
+  </script>
   </body>
   </html>
