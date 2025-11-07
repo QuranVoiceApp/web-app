@@ -12,6 +12,7 @@
       }, { once: true });
     }
   } catch {}
+
   const scriptsInOrder = [
     './scripts/dsp_fir.js',
     './scripts/watchdog.js',

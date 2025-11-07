@@ -72,5 +72,18 @@ test('All controls clickable and state toggles without errors', async ({ page })
   const failures = findBadLogs(taps.console, taps.app);
   if (connected) {
     expect(failures).toEqual([]);
+    // Assert no premature commit below 5760 bytes was attempted in app logs
+    const appJoined = taps.app.join('\n');
+    const commitLines = appJoined.split(/\n/).filter(l => /commit\(reason=/.test(l));
+    for (const line of commitLines) {
+      const m = /have=(\d+)/.exec(line);
+      if (m) {
+        const have = parseInt(m[1], 10);
+        expect(have).toBeGreaterThanOrEqual(5760);
+      }
+    }
+    // Check for a successful turn markers in either app or console logs
+    const ok = /response\.output_audio\.delta|response\.done/.test(appJoined) || /response\.output_audio\.delta|response\.done/.test(taps.console.join('\n'));
+    expect(ok).toBeTruthy();
   }
 });
