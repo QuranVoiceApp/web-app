@@ -3381,7 +3381,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
       });
     }
   } catch {}
-})();
+
   async function unlockIOSAudio(ctx) {
     const context = ctx || state.playCtx || state.audioContext;
     const outEl = document.getElementById('qvtOut') || state.outEl;
@@ -3411,6 +3411,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
       state.audioUnlockPending = true;
     }
   }
+})();
 window.__asimoConnect = async function(){
   // Open WS → send session.update → start mic tracks
   const mode = (window.ASIMO_SETTINGS && ASIMO_SETTINGS.recitationMode) ? "quran_recitation" : "default";
