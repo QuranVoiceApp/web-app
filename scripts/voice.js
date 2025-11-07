@@ -1,3 +1,4 @@
+let isConnected=false; let connectBtn=null; function setConnected(v){ isConnected=!!v; if(connectBtn){ connectBtn.textContent = isConnected ? "Disconnect" : "Connect"; connectBtn.classList.toggle("connected", isConnected);} }
 (() => {
   if (typeof window !== 'undefined') {
     try {
@@ -13,12 +14,15 @@
   let storageEnabled = true;
   const $ = (id) => document.getElementById(id);
 
+  function appendLog(line) {
+    try {
+      const el = $('log');
+      if (el) { el.value += line + "\n"; el.scrollTop = el.scrollHeight; }
+    } catch {}
+  }
   const log = (...args) => {
     const line = `[${new Date().toLocaleTimeString()}] ${args.join(' ')}`;
-    const el = $('log');
-    if (el) {
-      try { el.value += line + "\n"; el.scrollTop = el.scrollHeight; } catch {}
-    }
+    appendLog(line);
     try { console.log(...args); } catch {}
     try { logBuffer.push(line); } catch {}
   };
@@ -57,9 +61,11 @@
     } catch {}
   };
 
-  const wsUrl = (window.Env && window.Env.WS_URL) || 'wss://quran.asimo.io/realtime/v1/ws';
-  try { const elWs = $('wsUrl'); if (elWs) elWs.textContent = wsUrl; } catch {}
+  // URL params early so we can honor ws override
   const urlParams = new URLSearchParams(location.search);
+  const wsOverride = urlParams.get('ws') || urlParams.get('ws_url');
+  const wsUrl = wsOverride || ((window.Env && window.Env.WS_URL) || 'wss://quran.asimo.io/realtime/v1/ws');
+  try { const elWs = $('wsUrl'); if (elWs) elWs.textContent = wsUrl; } catch {}
   const ffTokens = (urlParams.get('ff') || '').split(',').filter(Boolean);
   const FF = (() => {
     const set = new Set(ffTokens);
@@ -156,6 +162,14 @@
     try { window.__qvtTest._markReady(); } catch {}
   };
 
+  function updateMuteTestid() {
+    try {
+      const el = document.getElementById('muteState');
+      const a = document.getElementById('qvtOut');
+      if (el && a) el.textContent = a.muted ? 'muted' : 'unmuted';
+    } catch {}
+  }
+
   const emitVersionBanner = () => {
     const fallback = `QVT web dev (${new Date().toISOString().slice(0, 10)})`;
     const logBanner = (msg, meta = {}) => {
@@ -188,7 +202,8 @@
     }
   };
 
-  const diag = FF.diag || urlParams.get('debug') === 'verbose';
+  const diag = FF.diag || urlParams.get('debug') === 'verbose' || urlParams.get('debug') === '1' || urlParams.get('debug') === 'true';
+  const debugBeep = urlParams.get('debug_beep') === '1';
 
   emitVersionBanner();
   log('flags', activeFlags || 'none');
@@ -246,6 +261,7 @@
       const outEl = $('qvtOut');
       if (outEl) {
         outEl.muted = false;
+        updateMuteTestid();
         outEl.volume = 1;
         const playPromise = outEl.play?.();
         if (playPromise && typeof playPromise.catch === 'function') playPromise.catch(() => {});
@@ -299,11 +315,14 @@
       else setTimeout(bindLater, 0);
     } catch {}
   };
-  // Strict commit gating counters – do not commit unless ≥5 frames (≈100ms) and ≥4800 bytes
+  // Strict commit gating counters – do not commit unless ≥6 frames (≈120ms) and ≥5760 bytes
   let framesSinceCommit = 0;
   let msSinceLastCommit = 0;
   let bytesSinceCommit = 0;
-  const MIN_COMMIT_BYTES = 4800; // matches backend commit deferral gate
+  const MIN_COMMIT_MS = 120;
+  const MIN_COMMIT_FRAMES = 6;
+  const MIN_COMMIT_BYTES = 5760; // 24kHz PCM16 → 48 bytes/ms
+  let commitRequiredBytes = 0; // raised temporarily when server defers
   const IDLE_COMMIT_MS = 1200;
   const scheduleIdleCommit = (reason = 'timer') => {
     if (state.idleCommitTimer) {
@@ -313,8 +332,9 @@
     state.idleCommitTimer = setTimeout(() => {
       state.idleCommitTimer = null;
       if (state.ws && state.ws.readyState === 1) {
-        if (bytesSinceCommit >= MIN_COMMIT_BYTES && sendAudioCommit(reason)) {
-          log('auto-commit (idle)', reason);
+        const need = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
+        if (!state.responseActive && bytesSinceCommit >= need && (metrics.sentAppends||0) > 0) {
+          if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${bytesSinceCommit} need=${need}`);
         }
       }
     }, IDLE_COMMIT_MS);
@@ -335,10 +355,11 @@
           // Only commit if some audio was sent recently and we have ≥commit window buffered
           if (state.responseActive) { log('commit.skipped responseActive'); return; }
           const ageOk = (Date.now() - (state.lastAudioSentAt||0)) > (commitDelay - 50);
-          const framesOk = framesSinceCommit >= 5;
-          const bytesOk = bytesSinceCommit >= MIN_COMMIT_BYTES;
+          const framesOk = framesSinceCommit >= MIN_COMMIT_FRAMES;
+          const need = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
+          const bytesOk = bytesSinceCommit >= need;
           if (ageOk && framesOk && bytesOk && (metrics.sentAppends||0) > 0) {
-            if (sendAudioCommit('inactivity')) log('auto-commit (inactivity)');
+            if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${bytesSinceCommit} need=${need}`);
           } else if (!framesOk) {
             try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
           } else if (!bytesOk) {
@@ -432,6 +453,7 @@
     const el = ensureOutputElement();
     if (el) {
       try { el.muted = false; } catch {}
+      updateMuteTestid();
       try {
         const playPromise = el.play();
         if (playPromise && typeof playPromise.catch === 'function') playPromise.catch(() => {});
@@ -569,7 +591,8 @@
     const playbackDisplay = (FF.pb_polish || state.playbackUnderruns > 0)
       ? ` · pbUnderruns=${state.playbackUnderruns || 0} · crossfade=${state.crossfadeCount || 0}`
       : '';
-    m.textContent = `sentAppends=${metrics.sentAppends} sentBytesAudio=${metrics.sentBytesAudio}B · recvAudioChunks=${metrics.recvAudioChunks} recvAudioBytes=${metrics.recvAudioBytes}B · transcriptChars=${metrics.recvTranscriptChars} · nz=${nzPct}% · rtt=${rttDisplay}ms · commitWin=${winDisplay}ms${driftDisplay}${jitterDisplay}${playbackDisplay}`;
+    const needBytes = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
+    m.textContent = `sentAppends=${metrics.sentAppends} sentBytesAudio=${metrics.sentBytesAudio}B · recvAudioChunks=${metrics.recvAudioChunks} recvAudioBytes=${metrics.recvAudioBytes}B · transcriptChars=${metrics.recvTranscriptChars} · nz=${nzPct}% · rtt=${rttDisplay}ms · commitWin=${winDisplay}ms · commitReady=${bytesSinceCommit}/${needBytes}B${driftDisplay}${jitterDisplay}${playbackDisplay}`;
     try { $('commitWin').textContent = String(winDisplay); } catch {}
     try { $('rttEwma').textContent = String(rttDisplay); } catch {}
     state.commitWinMs = winDisplay;
@@ -746,7 +769,11 @@
     if (state.ws && state.ws.readyState === 1 && mode === 'resume') {
       try { state.ws.send(JSON.stringify({ type: 'response.resume_audio' })); } catch {}
     } else if (state.ws && state.ws.readyState === 1 && mode === 'cancel') {
-      try { state.ws.send(JSON.stringify({ type: 'response.cancel' })); } catch {}
+      if (state.responseActive === true) {
+        try { state.ws.send(JSON.stringify({ type: 'response.cancel' })); } catch {}
+      } else {
+        log('cancel.skipped no-active-response');
+      }
       state.cancelEvents += 1;
     }
     if (state.bargeDuckAt) {
@@ -1041,6 +1068,7 @@
           outEl.setAttribute('playsinline', '');
           outEl.autoplay = true;
           if (!state.audioUnlocked) outEl.muted = true;
+          updateMuteTestid();
           state.outEl = outEl;
           state.sinkEl = outEl;
           if (state.outputSupported && state.speakerId && typeof outEl.setSinkId === 'function') {
@@ -1389,6 +1417,7 @@
           state.recvAudioChunks = 0;
           if (state.outEl) {
             try { state.outEl.muted = true; } catch {}
+            updateMuteTestid();
             try { state.outEl.srcObject = null; } catch {}
           }
           state.sinkDest = null;
@@ -1557,6 +1586,16 @@
         const cause = msg.cause || (msg.error && (msg.error.code || msg.error.type)) || 'upstream';
         const errCode = (msg.error && (msg.error.code || msg.error.type)) || msg.upstream_cause || cause;
         state.sendDisplay = `ERR:${errCode}`;
+        // Treat commit-too-small as informational: hold until threshold
+        if (/commit_empty|commit.*too.*small/i.test(String(errCode))) {
+          try {
+            commitRequiredBytes = Math.max(commitRequiredBytes || 0, MIN_COMMIT_BYTES);
+            log('commit.deferred (upstream)', `need=${commitRequiredBytes} have=${bytesSinceCommit}`);
+          } catch {}
+          // brief pause then resume
+          pauseIngress(250);
+          break;
+        }
         pauseIngress(1000);
         updateUiPills();
         try {
@@ -1590,8 +1629,9 @@
       }
       case 'ingress.commit_deferred':
       case 'ingress.commit_deferred@v1': {
-        const need = msg.needed_bytes || msg.neededBytes;
-        const have = msg.have_bytes || msg.haveBytes;
+        const need = Number(msg.needed_bytes || msg.neededBytes) || MIN_COMMIT_BYTES;
+        const have = Number(msg.have_bytes || msg.haveBytes) || 0;
+        commitRequiredBytes = Math.max(commitRequiredBytes || 0, need);
         try { log('commit.deferred', `need=${need} have=${have}`); } catch {}
         break;
       }
@@ -1680,6 +1720,7 @@
         const b64 = msg.delta || msg.audio || msg.data || msg.chunk || msg.output_audio_chunk;
         if (state.outEl && state.audioUnlocked) {
           try { state.outEl.muted = false; } catch {}
+          updateMuteTestid();
         }
         if (b64 && typeof b64 === 'string') {
           const { f32 } = base64ToFloat32(b64, msg.sample_rate_hz || 24000);
@@ -1802,9 +1843,18 @@
             setTtsGain(1.0);
           }
         }
-        // Optional auto-commit flow on silence (gated by ≥5 frames)
+        // Optional auto-commit flow on silence — allow >= ~96ms on speech stop, else wait
         if (t === 'input_audio_buffer.speech_ended' && $('autoCommit')?.checked) {
-          try { if (sendAudioCommit('inactivity')) log('auto-commit (speech_ended)'); } catch {}
+          try {
+            const tol = 4608; // ~96ms @ 24k/pcm16
+            const need = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
+            if (bytesSinceCommit >= tol) {
+              if (bytesSinceCommit < need) commitRequiredBytes = need;
+              if (sendAudioCommit('speech_stop')) log('commit(reason=speech_stop)', `have=${bytesSinceCommit} need=${need}`);
+            } else {
+              log('commit.suppressed', `reason=speech_stop have=${bytesSinceCommit} need=${tol}`);
+            }
+          } catch {}
         }
         break;
       case 'input_audio_buffer.committed':
@@ -1944,7 +1994,7 @@
       return false;
     }
     // Enforce ≥100ms of buffered audio (≥5 frames of 20ms) AND ≥4800B appended
-    if (framesSinceCommit < 5 || msSinceLastCommit < 100 || bytesSinceCommit < MIN_COMMIT_BYTES) {
+    if (framesSinceCommit < MIN_COMMIT_FRAMES || msSinceLastCommit < MIN_COMMIT_MS || bytesSinceCommit < Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)) {
       try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
       if (bytesSinceCommit < MIN_COMMIT_BYTES) { try { log(`commit.skipped bytes=${bytesSinceCommit}`); } catch {} }
       return false;
@@ -2144,11 +2194,10 @@
         try { if (state.stragglerTimer) clearTimeout(state.stragglerTimer); } catch {}
         state.stragglerTimer = setTimeout(() => {
           try {
-            if (framesSinceCommit >= 5 && bytesSinceCommit >= MIN_COMMIT_BYTES) {
-              if (sendAudioCommit('straggler')) log('auto-commit (straggler flush)');
+            if (framesSinceCommit >= MIN_COMMIT_FRAMES && bytesSinceCommit >= Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)) {
+              if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${bytesSinceCommit} need=${Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)}`);
             } else {
-              try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
-              if (bytesSinceCommit < MIN_COMMIT_BYTES) { try { log(`commit.skipped bytes=${bytesSinceCommit}`); } catch {} }
+              try { log(`commit.suppressed reason=straggler have=${bytesSinceCommit} need=${MIN_COMMIT_BYTES}`); } catch {}
             }
           } catch {}
         }, 30);
@@ -2686,6 +2735,58 @@
       await calibrateAmbient(analyser);
       setupDiagnostics(ctx, analyser, stream);
       startVisualizer();
+      // Optional chirp to verify output routing (100ms @ 1kHz)
+      try {
+        if (debugBeep && state.playCtx) {
+          const osc = state.playCtx.createOscillator();
+          const g = state.playCtx.createGain();
+          osc.frequency.value = 1000;
+          g.gain.value = 0.2;
+          osc.connect(g);
+          if (state.sinkDest) g.connect(state.sinkDest);
+          else g.connect(state.playCtx.destination);
+          const t0 = state.playCtx.currentTime;
+          osc.start(t0);
+          osc.stop(t0 + 0.10);
+        }
+      } catch {}
+      // Post-start silent stream probe: if nz% stays ~0, try a simpler constraint set once
+      try {
+        if (!FORCE_SIM) {
+          if (!state._probeTimer) {
+            state._probeTimer = setTimeout(async () => {
+              try {
+                const nzPct = metrics.totalSamples ? Math.round((metrics.nzSamples / metrics.totalSamples) * 100) : 0;
+                if ((nzPct < 1) && !state.__probeFallbackTried) {
+                  const warn = $('silenceWarn'); if (warn) { warn.style.display = ''; warn.textContent = 'Mic stream is silent (0%). Change input above or check OS/site mic settings.'; }
+                  state.__probeFallbackTried = true;
+                  log('probe.fallback', 'nz% < 1; retrying with plain {audio:true}');
+                  try { stopMic(); } catch {}
+                  try {
+                    const stream2 = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                    // If we got a stream, rebuild capture path quickly
+                    const ctx2 = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+                    const source2 = ctx2.createMediaStreamSource(stream2);
+                    const out = await configureCapture(ctx2, source2, { monitor: undefined });
+                    await unlockIOSAudio(ctx2);
+                    state.processor = out.processor;
+                    state.audioContext = ctx2;
+                    state.mediaStream = stream2;
+                    state.analyser = out.analyser;
+                    state.micActive = true;
+                    $('btnMic').textContent = 'Stop Mic';
+                    log('Mic re-started (fallback)');
+                    startVisualizer();
+                  } catch (e) {
+                    log('probe.fallback.error', e?.message || e);
+                  }
+                }
+              } catch {}
+              finally { try { clearTimeout(state._probeTimer); } catch {}; state._probeTimer = null; }
+            }, 1500);
+          }
+        }
+      } catch {}
       if (diag && stream && !FORCE_SIM) {
         try { await autoRecordAnalyse(stream, 5000); } catch (err) { log('autoRecord error', err.message || err); }
       }
@@ -2815,7 +2916,7 @@
     try {
       const blob = new Blob([logBuffer.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob); a.download = `qvt-log-${Date.now()}.txt`; a.click();
+      a.href = URL.createObjectURL(blob); a.download = `qvt-log-${Date.now()}.txt`; aif(window.ASIMO_SETTINGS && ASIMO_SETTINGS.autoDownload){ .click(); }
       setTimeout(() => URL.revokeObjectURL(a.href), 3000);
     } catch {}
   }));
@@ -3164,6 +3265,20 @@
         const x = i * (sp.width / bars);
         spc.fillRect(x, sp.height - h, (sp.width / bars) - 2, h);
       }
+      // Overlay output analyser RMS as a thin bar at bottom
+      try {
+        const oa = state.outAnalyser;
+        if (oa) {
+          const tmp = new Float32Array(oa.fftSize);
+          oa.getFloatTimeDomainData(tmp);
+          let sum = 0; for (let i=0;i<tmp.length;i++){ const s=tmp[i]; sum += s*s; }
+          const rms = Math.sqrt(sum / Math.max(1,tmp.length));
+          state._outRms = rms;
+          const outH = Math.min(1, rms*8) * 6; // tiny bar
+          spc.fillStyle = '#3fa8ff';
+          spc.fillRect(0, sp.height-2-outH, sp.width, outH);
+        }
+      } catch {}
       state.visRaf = requestAnimationFrame(draw);
     };
     if (state.visRaf) cancelAnimationFrame(state.visRaf);
@@ -3266,6 +3381,7 @@
     if (outEl) {
       try {
         outEl.muted = false;
+        updateMuteTestid();
         const playPromise = outEl.play();
         if (playPromise && typeof playPromise.catch === 'function') {
           playPromise.catch(() => {});
@@ -3281,3 +3397,13 @@
       state.audioUnlockPending = true;
     }
   }
+window.__asimoConnect = async function(){
+  // Open WS → send session.update → start mic tracks
+  const mode = (window.ASIMO_SETTINGS && ASIMO_SETTINGS.recitationMode) ? "quran_recitation" : "default";
+  const requested_vad_mode = (window.ASIMO_SETTINGS && ASIMO_SETTINGS.useServerVAD) ? "server" : "client";
+  // Example: ensure first session.update carries requested_vad_mode + mode
+  // if (window.ws) { ws.send(JSON.stringify({ type:"session.update", session:{ requested_vad_mode, mode } })); }
+};
+window.__asimoDisconnect = async function(){
+  // Stop mic tracks, close peer connection / websocket
+};

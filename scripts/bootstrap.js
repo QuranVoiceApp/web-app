@@ -4,7 +4,9 @@
     const qa = (params.get('qa') || '').toLowerCase();
     const isQA = qa === '1' || qa === 'true';
     if (isQA) {
-      window.__qvtQA = true;
+      // Mark QA mode and show banner when DOM is ready
+      try { (window.__qvtFlags ||= {}).qa = true; } catch {}
+      try { window.__qvtQA = true; } catch {}
       window.addEventListener('DOMContentLoaded', () => {
         try { const el = document.getElementById('qaModeBanner'); if (el) el.style.display = 'block'; } catch {}
       }, { once: true });

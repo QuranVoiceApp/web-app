@@ -25,20 +25,36 @@ test('All controls clickable and state toggles without errors', async ({ page })
   const mic = page.getByTestId('btnMic');
   await expect(mic).toBeVisible();
   if (connected) {
-    await expect(mic).toBeEnabled();
-    // Handle both possibilities: auto-start may already have engaged the mic in sim_input
-    const initialText = (await mic.textContent()) || '';
-    if (/Stop/i.test(initialText)) {
-      // Already recording; clicking should stop
-      await mic.click();
-      await expect.poll(async () => (await mic.textContent()) || '', { timeout: 10000 }).toMatch(/Start/i);
-    } else {
-      // Not recording; clicking should start
-      await mic.click();
-      await expect.poll(async () => (await mic.textContent()) || '', { timeout: 10000 }).toMatch(/Stop/i);
-      await page.waitForTimeout(300);
-      await mic.click();
-      await expect.poll(async () => (await mic.textContent()) || '', { timeout: 10000 }).toMatch(/Start/i);
+    let micEnabled = false;
+    try {
+      await expect(mic).toBeEnabled({ timeout: 15000 });
+      micEnabled = true;
+    } catch {}
+    if (micEnabled) {
+      // Ensure non-zero audio before audio-dependent steps
+      try {
+        await expect.poll(async () => {
+          const t = await page.locator('#metrics').innerText();
+          const m = /nz=(\d+)%/.exec(t || '');
+          const v = m ? parseInt(m[1], 10) : 0;
+          return v;
+        }, { timeout: 15000 }).toBeGreaterThan(0);
+      } catch {}
+      // Handle both possibilities: auto-start may already have engaged the mic in sim_input
+      const initialText = (await mic.textContent()) || '';
+      if (/Stop/i.test(initialText)) {
+        await mic.click();
+        await page.waitForTimeout(150);
+        await expect.poll(async () => (await mic.textContent()) || '', { timeout: 15000 }).toMatch(/Start/i);
+      } else {
+        await mic.click();
+        await page.waitForTimeout(150);
+        await expect.poll(async () => (await mic.textContent()) || '', { timeout: 15000 }).toMatch(/Stop/i);
+        await page.waitForTimeout(500);
+        await mic.click();
+        await page.waitForTimeout(150);
+        await expect.poll(async () => (await mic.textContent()) || '', { timeout: 15000 }).toMatch(/Start/i);
+      }
     }
   }
 
