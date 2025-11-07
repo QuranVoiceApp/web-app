@@ -201,7 +201,7 @@
     }
   };
 
-  const diag = FF.diag || urlParams.get('debug') === 'verbose';
+  const diag = FF.diag || urlParams.get('debug') === 'verbose' || urlParams.get('debug') === '1' || urlParams.get('debug') === 'true';
   const debugBeep = urlParams.get('debug_beep') === '1';
 
   emitVersionBanner();
@@ -332,8 +332,8 @@
       state.idleCommitTimer = null;
       if (state.ws && state.ws.readyState === 1) {
         const need = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
-        if (!state.responseActive && bytesSinceCommit >= need && sendAudioCommit(reason)) {
-          log('auto-commit (idle)', reason);
+        if (!state.responseActive && bytesSinceCommit >= need && (metrics.sentAppends||0)>0) {
+          if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${bytesSinceCommit} need=${need}`);
         }
       }
     }, IDLE_COMMIT_MS);
@@ -1844,7 +1844,17 @@
         }
         // Optional auto-commit flow on silence (gated by ≥5 frames)
         if (t === 'input_audio_buffer.speech_ended' && $('autoCommit')?.checked) {
-          try { if (sendAudioCommit('inactivity')) log('auto-commit (speech_ended)'); } catch {}
+          try {
+            // Allow slightly lower threshold on explicit speech stop (>= ~96ms / 4608B)
+            const tol = 4608;
+            const need = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
+            if (bytesSinceCommit >= tol) {
+              if (bytesSinceCommit < need) commitRequiredBytes = need; // future commits use stricter floor
+              if (sendAudioCommit('speech_stop')) log('commit(reason=speech_stop)', `have=${bytesSinceCommit} need=${need}`);
+            } else {
+              log('commit.suppressed', `reason=speech_stop have=${bytesSinceCommit} need=${tol}`);
+            }
+          } catch {}
         }
         break;
       case 'input_audio_buffer.committed':
@@ -1983,7 +1993,9 @@
       try { log('commit.skipped responseActive'); } catch {}
       return false;
     }
-    // Enforce ≥100ms of buffered audio (≥5 frames of 20ms) AND ≥4800B appended
+    // Guard empties
+    if (bytesSinceCommit <= 0) { try { log('commit.suppressed', 'reason=empty have=0 need=' + Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)); } catch {} ; return false; }
+    // Enforce ≥120ms/5760B by default; allow server-raised threshold via commitRequiredBytes
     if (framesSinceCommit < MIN_COMMIT_FRAMES || msSinceLastCommit < MIN_COMMIT_MS || bytesSinceCommit < Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)) {
       try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
       if (bytesSinceCommit < MIN_COMMIT_BYTES) { try { log(`commit.skipped bytes=${bytesSinceCommit}`); } catch {} }
@@ -1994,6 +2006,8 @@
       state.tailPadNeeded = false;
     }
     try {
+      const needUsed = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
+      try { log(`commit(reason=${reason})`, `have=${bytesSinceCommit} need=${needUsed}`); } catch {}
       state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
       // Reset gating counters
       try {
@@ -2312,6 +2326,7 @@
       }
     };
 
+    let workletDisabled = false;
     const attachScriptProcessor = () => {
       cleanupProcessor();
       try {
@@ -2349,6 +2364,7 @@
     };
 
     const attachWorkletNode = async () => {
+      if (workletDisabled) { log('worklet', 'disabled; using script'); return attachScriptProcessor(); }
       if (connectingWorklet) return;
       connectingWorklet = true;
       try {
@@ -2369,11 +2385,13 @@
         monitorNode.connect(ctx.destination);
         try { source.connect(node); } catch {}
         state.framesSeen = 0;
+        let workletFrameLogged = false;
         node.port.onmessage = (ev) => {
           try {
             const input = ev.data && ev.data.data;
             if (!input) return;
             state.framesSeen = (state.framesSeen || 0) + 1;
+            if (!workletFrameLogged && diag) { workletFrameLogged = true; log('workletState=frames_ok'); }
             handleFrame(input);
           } catch (e) { log('worklet onmessage error', e.message || e); }
         };
@@ -2387,11 +2405,11 @@
           try { initDriftTracker(performance.now()); } catch { initDriftTracker(); }
         }
         markWatchdogFrame();
-        log('capture', 'worklet attached');
+        log('capture', 'worklet attached'); if (diag) log('workletState=attached');
         setTimeout(() => {
           try {
             if (activeMode === 'worklet' && (state.framesSeen || 0) === 0) {
-              log('fallback', 'no worklet frames; switching to script');
+              log('fallback', 'no worklet frames; switching to script'); if (diag) log('workletState=fallback_script');
               const now = performance.now();
               if (state.watchdogController && typeof state.watchdogController.registerFallback === 'function') {
                 state.watchdogController.registerFallback(now);
@@ -2400,7 +2418,7 @@
                 state.workletStalls = (state.workletStalls || 0) + 1;
                 if (FF.watchdog) state.watchdogRecoveryAt = now + 4000;
               }
-              attachScriptProcessor();
+              workletDisabled = true; attachScriptProcessor();
               if (FF.watchdog) syncWatchdogState();
             }
           } catch {}
@@ -2440,12 +2458,12 @@
           const now = performance.now();
           const ctrl = state.watchdogController;
           if (ctrl && typeof ctrl.shouldFallback === 'function') {
-            if (activeMode === 'worklet' && ctrl.shouldFallback(now)) {
+            if (!workletDisabled && activeMode === 'worklet' && ctrl.shouldFallback(now)) {
               log('watchdog', 'worklet stall detected; switching to script');
               ctrl.registerFallback(now);
-              attachScriptProcessor();
+              workletDisabled = true; attachScriptProcessor();
               syncWatchdogState();
-            } else if (activeMode === 'script' && ctrl.shouldRecover(now)) {
+            } else if (!workletDisabled && activeMode === 'script' && ctrl.shouldRecover(now)) {
               try {
                 await attachWorkletNode();
                 if (activeMode === 'worklet' && typeof ctrl.registerRecoverySuccess === 'function') {
@@ -2465,15 +2483,15 @@
               }
             }
           } else {
-            if (activeMode === 'worklet') {
+            if (!workletDisabled && activeMode === 'worklet') {
               const last = state.watchdogLastFrame || now;
               if ((now - last) > 600) {
                 log('watchdog', 'worklet stall detected; switching to script');
                 state.workletStalls = (state.workletStalls || 0) + 1;
-                attachScriptProcessor();
+                workletDisabled = true; attachScriptProcessor();
                 state.watchdogRecoveryAt = now + 4000;
               }
-            } else if (activeMode === 'script' && state.watchdogRecoveryAt && now >= state.watchdogRecoveryAt) {
+            } else if (!workletDisabled && activeMode === 'script' && state.watchdogRecoveryAt && now >= state.watchdogRecoveryAt) {
               try {
                 await attachWorkletNode();
                 if (activeMode === 'worklet') {
@@ -2893,6 +2911,7 @@
     log('connect.click');
     if (state.connected) { try { state.ws && state.ws.close(); } catch {}; return; }
     state.audioUnlockPending = true;
+    try { state.playCtx?.resume(); state.audioContext?.resume(); setTtsGain(1.0); } catch {}
     await startConnection();
   });
   bindOnce('#btnMic', 'click', (ev) => {
