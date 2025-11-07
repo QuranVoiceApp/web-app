@@ -26,6 +26,12 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
     try { console.log(...args); } catch {}
     try { logBuffer.push(line); } catch {}
   };
+  // Enhanced logging with categories for better diagnostics
+  const logFlow = (step, ...args) => log(`🔄 [FLOW] ${step}`, ...args);
+  const logState = (component, data) => log(`📊 [STATE] ${component}:`, typeof data === 'object' ? JSON.stringify(data) : data);
+  const logAudio = (...args) => log(`🎤 [AUDIO]`, ...args);
+  const logCommit = (decision, counters) => log(`✓ [COMMIT] ${decision}`, `frames=${counters.frames} ms=${counters.ms} bytes=${counters.bytes}`);
+  const logError = (context, error) => log(`❌ [ERROR] ${context}:`, error?.message || error);
 
   const logBuffer = [];
   // Global error capture → surface to in-app log
@@ -1028,7 +1034,8 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
         };
         state.connected = true;
         setConn(true);
-        log('WebSocket open');
+        logFlow('WebSocket connected', `url=${wsUrl.split('/').slice(0,3).join('/')}`);
+        logState('connection', { connected: true, readyState: ws.readyState, sendPath: state.sendPath });
         startDiagPinger();
         state.sendDisplay = `send=${state.sendPath}`;
         state.serverErrorRetrySent = false;
@@ -1643,6 +1650,8 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
         $('transcript').textContent = '';
         state.responseActive = true;
         state.partialActive = false;
+        logFlow('Response started', 'responseActive=true');
+        logState('response', { active: true, partial: false, ttsChunkSeen: state.firstTtsChunkSeen });
         updateUiPills();
         break;
       // Ignore raw OpenAI transcript deltas to avoid double-printing;
@@ -1802,7 +1811,8 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
       case 'response.audio.done':
       case 'response.output_audio.done':
       case 'response.done':
-        log('response.end');
+        logFlow('Response completed', 'responseActive=false');
+        logState('response', { active: false, partial: false, duration: state.lastTurn?.durationMs || 'unknown' });
         try { if (state.ttsGainNode) state.ttsGainNode.gain.value = 1.0; } catch {}
         state.responseActive = false;
         state.partialActive = false;
@@ -1992,19 +2002,26 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
   }
 
   function sendAudioCommit(reason = 'auto') {
-    if (!state.ws || state.ws.readyState !== 1) return false;
+    const counters = { frames: framesSinceCommit, ms: msSinceLastCommit, bytes: bytesSinceCommit };
+    if (!state.ws || state.ws.readyState !== 1) {
+      logCommit('blocked - ws not ready', counters);
+      return false;
+    }
     clearIdleCommit();
     // Block commits while a response is actively speaking (no barge-in by default)
     if (state.responseActive) {
-      try { log('commit.skipped responseActive'); } catch {}
+      logCommit('skipped - response active', counters);
       return false;
     }
     // Guard empties
-    if (bytesSinceCommit <= 0) { try { log('commit.suppressed', 'reason=empty have=0 need=' + Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)); } catch {} ; return false; }
+    if (bytesSinceCommit <= 0) {
+      logCommit('suppressed - empty buffer', counters);
+      return false;
+    }
     // Enforce ≥120ms/5760B by default; allow server-raised threshold via commitRequiredBytes
-    if (framesSinceCommit < MIN_COMMIT_FRAMES || msSinceLastCommit < MIN_COMMIT_MS || bytesSinceCommit < Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)) {
-      try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
-      if (bytesSinceCommit < MIN_COMMIT_BYTES) { try { log(`commit.skipped bytes=${bytesSinceCommit}`); } catch {} }
+    const needBytes = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
+    if (framesSinceCommit < MIN_COMMIT_FRAMES || msSinceLastCommit < MIN_COMMIT_MS || bytesSinceCommit < needBytes) {
+      logCommit(`skipped - need≥${MIN_COMMIT_FRAMES}fr ${MIN_COMMIT_MS}ms ${needBytes}B`, counters);
       return false;
     }
     if (FF.barge_in && state.tailPadNeeded) {
@@ -2012,8 +2029,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
       state.tailPadNeeded = false;
     }
     try {
-      const needUsed = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
-      try { log(`commit(reason=${reason})`, `have=${bytesSinceCommit} need=${needUsed}`); } catch {}
+      logCommit(`SENT (${reason}) need=${needBytes}B`, counters);
       state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
       // Reset gating counters
       try {
@@ -2070,6 +2086,10 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
       msSinceLastCommit += 20;
       state.appendsSinceCommit = (state.appendsSinceCommit || 0) + 1;
       try { bytesSinceCommit += pcmBuf.byteLength || 0; } catch { bytesSinceCommit = 0; }
+      // Log audio capture progress every 100 frames (~2s)
+      if (framesSinceCommit % 100 === 0) {
+        logAudio(`capture progress: ${framesSinceCommit}fr (${msSinceLastCommit}ms, ${bytesSinceCommit}B)`);
+      }
       return true;
     } catch (err) {
       log('sendAudioFrame error', err?.message || err);
@@ -2745,7 +2765,9 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
       state.analyser = analyser;
       state.micActive = true;
       $('btnMic').textContent = 'Stop Mic';
-      log('Mic started');
+      logFlow('Microphone started', `sampleRate=${ctx.sampleRate} captureMode=${captureMode}`);
+      logState('mic', { active: true, sampleRate: ctx.sampleRate, streamActive: stream?.active, tracks: stream?.getTracks().length });
+      logState('counters_reset', { framesSinceCommit, msSinceLastCommit, bytesSinceCommit });
       requestWakeLock(true);
       await calibrateAmbient(analyser);
       setupDiagnostics(ctx, analyser, stream);
