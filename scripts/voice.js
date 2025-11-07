@@ -1320,6 +1320,8 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
           silence_ms: 350,
         };
         const voiceChoice = getSelectedVoice();
+        const mode = (window.ASIMO_SETTINGS && ASIMO_SETTINGS.recitationMode) ? "quran_recitation" : "default";
+        const requested_vad_mode = (window.ASIMO_SETTINGS && ASIMO_SETTINGS.useServerVAD) ? "server" : "client";
         const sessionUpdate = {
           type: 'session.update',
           session: {
@@ -1327,6 +1329,8 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
             turn_detection: turnDetectionPayload,
             input_audio_format: { type: 'pcm16', channels: 1, sample_rate: 24000 },
             output_audio_format: { type: 'pcm16', channels: 1, sample_rate: 24000 },
+            requested_vad_mode: requested_vad_mode,
+            mode: mode,
           }
         };
         try {
@@ -1846,10 +1850,11 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
         // Optional auto-commit flow on silence — allow >= ~96ms on speech stop, else wait
         if (t === 'input_audio_buffer.speech_ended' && $('autoCommit')?.checked) {
           try {
+            // Allow slightly lower threshold on explicit speech stop (>= ~96ms / 4608B)
             const tol = 4608; // ~96ms @ 24k/pcm16
             const need = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
             if (bytesSinceCommit >= tol) {
-              if (bytesSinceCommit < need) commitRequiredBytes = need;
+              if (bytesSinceCommit < need) commitRequiredBytes = need; // future commits use stricter floor
               if (sendAudioCommit('speech_stop')) log('commit(reason=speech_stop)', `have=${bytesSinceCommit} need=${need}`);
             } else {
               log('commit.suppressed', `reason=speech_stop have=${bytesSinceCommit} need=${tol}`);
@@ -1993,7 +1998,9 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
       try { log('commit.skipped responseActive'); } catch {}
       return false;
     }
-    // Enforce ≥100ms of buffered audio (≥5 frames of 20ms) AND ≥4800B appended
+    // Guard empties
+    if (bytesSinceCommit <= 0) { try { log('commit.suppressed', 'reason=empty have=0 need=' + Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)); } catch {} ; return false; }
+    // Enforce ≥120ms/5760B by default; allow server-raised threshold via commitRequiredBytes
     if (framesSinceCommit < MIN_COMMIT_FRAMES || msSinceLastCommit < MIN_COMMIT_MS || bytesSinceCommit < Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)) {
       try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
       if (bytesSinceCommit < MIN_COMMIT_BYTES) { try { log(`commit.skipped bytes=${bytesSinceCommit}`); } catch {} }
@@ -2004,6 +2011,8 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
       state.tailPadNeeded = false;
     }
     try {
+      const needUsed = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
+      try { log(`commit(reason=${reason})`, `have=${bytesSinceCommit} need=${needUsed}`); } catch {}
       state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
       // Reset gating counters
       try {
@@ -2321,6 +2330,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
       }
     };
 
+    let workletDisabled = false;
     const attachScriptProcessor = () => {
       cleanupProcessor();
       try {
@@ -2358,6 +2368,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
     };
 
     const attachWorkletNode = async () => {
+      if (workletDisabled) { log('worklet', 'disabled; using script'); return attachScriptProcessor(); }
       if (connectingWorklet) return;
       connectingWorklet = true;
       try {
@@ -2378,11 +2389,13 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
         monitorNode.connect(ctx.destination);
         try { source.connect(node); } catch {}
         state.framesSeen = 0;
+        let workletFrameLogged = false;
         node.port.onmessage = (ev) => {
           try {
             const input = ev.data && ev.data.data;
             if (!input) return;
             state.framesSeen = (state.framesSeen || 0) + 1;
+            if (!workletFrameLogged && diag) { workletFrameLogged = true; log('workletState=frames_ok'); }
             handleFrame(input);
           } catch (e) { log('worklet onmessage error', e.message || e); }
         };
@@ -2396,11 +2409,11 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
           try { initDriftTracker(performance.now()); } catch { initDriftTracker(); }
         }
         markWatchdogFrame();
-        log('capture', 'worklet attached');
+        log('capture', 'worklet attached'); if (diag) log('workletState=attached');
         setTimeout(() => {
           try {
             if (activeMode === 'worklet' && (state.framesSeen || 0) === 0) {
-              log('fallback', 'no worklet frames; switching to script');
+              log('fallback', 'no worklet frames; switching to script'); if (diag) log('workletState=fallback_script');
               const now = performance.now();
               if (state.watchdogController && typeof state.watchdogController.registerFallback === 'function') {
                 state.watchdogController.registerFallback(now);
@@ -2409,7 +2422,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
                 state.workletStalls = (state.workletStalls || 0) + 1;
                 if (FF.watchdog) state.watchdogRecoveryAt = now + 4000;
               }
-              attachScriptProcessor();
+              workletDisabled = true; attachScriptProcessor();
               if (FF.watchdog) syncWatchdogState();
             }
           } catch {}
@@ -2449,12 +2462,12 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
           const now = performance.now();
           const ctrl = state.watchdogController;
           if (ctrl && typeof ctrl.shouldFallback === 'function') {
-            if (activeMode === 'worklet' && ctrl.shouldFallback(now)) {
+            if (!workletDisabled && activeMode === 'worklet' && ctrl.shouldFallback(now)) {
               log('watchdog', 'worklet stall detected; switching to script');
               ctrl.registerFallback(now);
-              attachScriptProcessor();
+              workletDisabled = true; attachScriptProcessor();
               syncWatchdogState();
-            } else if (activeMode === 'script' && ctrl.shouldRecover(now)) {
+            } else if (!workletDisabled && activeMode === 'script' && ctrl.shouldRecover(now)) {
               try {
                 await attachWorkletNode();
                 if (activeMode === 'worklet' && typeof ctrl.registerRecoverySuccess === 'function') {
@@ -2474,15 +2487,15 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
               }
             }
           } else {
-            if (activeMode === 'worklet') {
+            if (!workletDisabled && activeMode === 'worklet') {
               const last = state.watchdogLastFrame || now;
               if ((now - last) > 600) {
                 log('watchdog', 'worklet stall detected; switching to script');
                 state.workletStalls = (state.workletStalls || 0) + 1;
-                attachScriptProcessor();
+                workletDisabled = true; attachScriptProcessor();
                 state.watchdogRecoveryAt = now + 4000;
               }
-            } else if (activeMode === 'script' && state.watchdogRecoveryAt && now >= state.watchdogRecoveryAt) {
+            } else if (!workletDisabled && activeMode === 'script' && state.watchdogRecoveryAt && now >= state.watchdogRecoveryAt) {
               try {
                 await attachWorkletNode();
                 if (activeMode === 'worklet') {
@@ -2902,6 +2915,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
     log('connect.click');
     if (state.connected) { try { state.ws && state.ws.close(); } catch {}; return; }
     state.audioUnlockPending = true;
+    try { state.playCtx?.resume(); state.audioContext?.resume(); setTtsGain(1.0); } catch {}
     await startConnection();
   });
   bindOnce('#btnMic', 'click', (ev) => {
@@ -2916,7 +2930,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
     try {
       const blob = new Blob([logBuffer.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' });
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob); a.download = `qvt-log-${Date.now()}.txt`; aif(window.ASIMO_SETTINGS && ASIMO_SETTINGS.autoDownload){ .click(); }
+      a.href = URL.createObjectURL(blob); a.download = `qvt-log-${Date.now()}.txt`; if(window.ASIMO_SETTINGS && ASIMO_SETTINGS.autoDownload){ a.click(); }
       setTimeout(() => URL.revokeObjectURL(a.href), 3000);
     } catch {}
   }));
