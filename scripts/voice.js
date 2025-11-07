@@ -310,11 +310,14 @@
       else setTimeout(bindLater, 0);
     } catch {}
   };
-  // Strict commit gating counters – do not commit unless ≥5 frames (≈100ms) and ≥4800 bytes
+  // Strict commit gating counters – do not commit unless ≥6 frames (≈120ms) and ≥5760 bytes
   let framesSinceCommit = 0;
   let msSinceLastCommit = 0;
   let bytesSinceCommit = 0;
-  const MIN_COMMIT_BYTES = 4800; // matches backend commit deferral gate
+  const MIN_COMMIT_MS = 120;
+  const MIN_COMMIT_FRAMES = 6;
+  const MIN_COMMIT_BYTES = 5760; // 24kHz PCM16 → 48 bytes/ms
+  let commitRequiredBytes = 0; // raised temporarily when server defers
   const IDLE_COMMIT_MS = 1200;
   const scheduleIdleCommit = (reason = 'timer') => {
     if (state.idleCommitTimer) {
@@ -324,7 +327,8 @@
     state.idleCommitTimer = setTimeout(() => {
       state.idleCommitTimer = null;
       if (state.ws && state.ws.readyState === 1) {
-        if (bytesSinceCommit >= MIN_COMMIT_BYTES && sendAudioCommit(reason)) {
+        const need = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
+        if (!state.responseActive && bytesSinceCommit >= need && sendAudioCommit(reason)) {
           log('auto-commit (idle)', reason);
         }
       }
@@ -346,8 +350,9 @@
           // Only commit if some audio was sent recently and we have ≥commit window buffered
           if (state.responseActive) { log('commit.skipped responseActive'); return; }
           const ageOk = (Date.now() - (state.lastAudioSentAt||0)) > (commitDelay - 50);
-          const framesOk = framesSinceCommit >= 5;
-          const bytesOk = bytesSinceCommit >= MIN_COMMIT_BYTES;
+          const framesOk = framesSinceCommit >= MIN_COMMIT_FRAMES;
+          const need = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
+          const bytesOk = bytesSinceCommit >= need;
           if (ageOk && framesOk && bytesOk && (metrics.sentAppends||0) > 0) {
             if (sendAudioCommit('inactivity')) log('auto-commit (inactivity)');
           } else if (!framesOk) {
@@ -581,7 +586,8 @@
     const playbackDisplay = (FF.pb_polish || state.playbackUnderruns > 0)
       ? ` · pbUnderruns=${state.playbackUnderruns || 0} · crossfade=${state.crossfadeCount || 0}`
       : '';
-    m.textContent = `sentAppends=${metrics.sentAppends} sentBytesAudio=${metrics.sentBytesAudio}B · recvAudioChunks=${metrics.recvAudioChunks} recvAudioBytes=${metrics.recvAudioBytes}B · transcriptChars=${metrics.recvTranscriptChars} · nz=${nzPct}% · rtt=${rttDisplay}ms · commitWin=${winDisplay}ms${driftDisplay}${jitterDisplay}${playbackDisplay}`;
+    const needBytes = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
+    m.textContent = `sentAppends=${metrics.sentAppends} sentBytesAudio=${metrics.sentBytesAudio}B · recvAudioChunks=${metrics.recvAudioChunks} recvAudioBytes=${metrics.recvAudioBytes}B · transcriptChars=${metrics.recvTranscriptChars} · nz=${nzPct}% · rtt=${rttDisplay}ms · commitWin=${winDisplay}ms · commitReady=${bytesSinceCommit}/${needBytes}B${driftDisplay}${jitterDisplay}${playbackDisplay}`;
     try { $('commitWin').textContent = String(winDisplay); } catch {}
     try { $('rttEwma').textContent = String(rttDisplay); } catch {}
     state.commitWinMs = winDisplay;
@@ -1571,6 +1577,16 @@
         const cause = msg.cause || (msg.error && (msg.error.code || msg.error.type)) || 'upstream';
         const errCode = (msg.error && (msg.error.code || msg.error.type)) || msg.upstream_cause || cause;
         state.sendDisplay = `ERR:${errCode}`;
+        // Treat commit-too-small as informational: hold until threshold
+        if (/commit_empty|commit.*too.*small/i.test(String(errCode))) {
+          try {
+            commitRequiredBytes = Math.max(commitRequiredBytes || 0, MIN_COMMIT_BYTES);
+            log('commit.deferred (upstream)', `need=${commitRequiredBytes} have=${bytesSinceCommit}`);
+          } catch {}
+          // brief pause then resume
+          pauseIngress(250);
+          break;
+        }
         pauseIngress(1000);
         updateUiPills();
         try {
@@ -1604,8 +1620,9 @@
       }
       case 'ingress.commit_deferred':
       case 'ingress.commit_deferred@v1': {
-        const need = msg.needed_bytes || msg.neededBytes;
-        const have = msg.have_bytes || msg.haveBytes;
+        const need = Number(msg.needed_bytes || msg.neededBytes) || MIN_COMMIT_BYTES;
+        const have = Number(msg.have_bytes || msg.haveBytes) || 0;
+        commitRequiredBytes = Math.max(commitRequiredBytes || 0, need);
         try { log('commit.deferred', `need=${need} have=${have}`); } catch {}
         break;
       }
@@ -1959,7 +1976,7 @@
       return false;
     }
     // Enforce ≥100ms of buffered audio (≥5 frames of 20ms) AND ≥4800B appended
-    if (framesSinceCommit < 5 || msSinceLastCommit < 100 || bytesSinceCommit < MIN_COMMIT_BYTES) {
+    if (framesSinceCommit < MIN_COMMIT_FRAMES || msSinceLastCommit < MIN_COMMIT_MS || bytesSinceCommit < Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)) {
       try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
       if (bytesSinceCommit < MIN_COMMIT_BYTES) { try { log(`commit.skipped bytes=${bytesSinceCommit}`); } catch {} }
       return false;
