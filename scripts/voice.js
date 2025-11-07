@@ -1994,13 +1994,9 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
       try { log('commit.skipped responseActive'); } catch {}
       return false;
     }
-<<<<<<< HEAD
     // Guard empties
     if (bytesSinceCommit <= 0) { try { log('commit.suppressed', 'reason=empty have=0 need=' + Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)); } catch {} ; return false; }
     // Enforce ≥120ms/5760B by default; allow server-raised threshold via commitRequiredBytes
-=======
-    // Enforce ≥100ms of buffered audio (≥5 frames of 20ms) AND ≥4800B appended
->>>>>>> origin/main
     if (framesSinceCommit < MIN_COMMIT_FRAMES || msSinceLastCommit < MIN_COMMIT_MS || bytesSinceCommit < Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)) {
       try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
       if (bytesSinceCommit < MIN_COMMIT_BYTES) { try { log(`commit.skipped bytes=${bytesSinceCommit}`); } catch {} }
