@@ -340,7 +340,8 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
       if (state.ws && state.ws.readyState === 1) {
         const need = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
         if (!state.responseActive && bytesSinceCommit >= need && (metrics.sentAppends||0) > 0) {
-          if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${bytesSinceCommit} need=${need}`);
+          const hadBytes = bytesSinceCommit;
+          if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${hadBytes} need=${need}`);
         }
       }
     }, IDLE_COMMIT_MS);
@@ -365,7 +366,8 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
           const need = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
           const bytesOk = bytesSinceCommit >= need;
           if (ageOk && framesOk && bytesOk && (metrics.sentAppends||0) > 0) {
-            if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${bytesSinceCommit} need=${need}`);
+            const hadBytes = bytesSinceCommit;
+            if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${hadBytes} need=${need}`);
           } else if (!framesOk) {
             try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
           } else if (!bytesOk) {
@@ -1865,7 +1867,8 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
             const need = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
             if (bytesSinceCommit >= tol) {
               if (bytesSinceCommit < need) commitRequiredBytes = need; // future commits use stricter floor
-              if (sendAudioCommit('speech_stop')) log('commit(reason=speech_stop)', `have=${bytesSinceCommit} need=${need}`);
+              const hadBytes = bytesSinceCommit;
+              if (sendAudioCommit('speech_stop')) log('commit(reason=speech_stop)', `have=${hadBytes} need=${need}`);
             } else {
               log('commit.suppressed', `reason=speech_stop have=${bytesSinceCommit} need=${tol}`);
             }
@@ -2225,7 +2228,8 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
         state.stragglerTimer = setTimeout(() => {
           try {
             if (framesSinceCommit >= MIN_COMMIT_FRAMES && bytesSinceCommit >= Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)) {
-              if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${bytesSinceCommit} need=${Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)}`);
+              const hadBytes = bytesSinceCommit;
+              if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${hadBytes} need=${Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)}`);
             } else {
               try { log(`commit.suppressed reason=straggler have=${bytesSinceCommit} need=${MIN_COMMIT_BYTES}`); } catch {}
             }
