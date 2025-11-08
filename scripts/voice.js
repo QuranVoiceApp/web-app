@@ -1885,6 +1885,29 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
         bytesSinceCommit = 0;
         break;
       }
+      case 'commit_ready@v1': {
+        // Backend-controlled commit protocol: backend signals when buffer is ready
+        try {
+          const backendBytes = raw.bytes_buffered || 0;
+          const backendDuration = raw.duration_ms || 0;
+          log('commit_ready@v1', `backend=${backendBytes}B (${backendDuration}ms), local=${bytesSinceCommit}B`);
+
+          // Immediately send commit - backend has validated buffer is ready
+          state.ws.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+
+          // Reset local counters
+          framesSinceCommit = 0;
+          msSinceLastCommit = 0;
+          bytesSinceCommit = 0;
+          state.appendsSinceCommit = 0;
+          state.lastCommitReason = 'backend_ready';
+
+          log('✓ [COMMIT] Responded to backend commit_ready', `sent=${backendBytes}B`);
+        } catch (e) {
+          log('ERROR', 'Failed to respond to commit_ready', e);
+        }
+        break;
+      }
       default:
         // Keep concise, but log unknown types (more verbose in diag)
         if (rawType) {
