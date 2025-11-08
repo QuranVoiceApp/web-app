@@ -17,6 +17,7 @@
     './scripts/dsp_fir.js',
     './scripts/watchdog.js',
     './scripts/env.js',
+    './scripts/protocol_v2.js',  // Protocol v2 library (opt-in)
     './scripts/voice.js',
     './scripts/sw-register.js',
   ];
