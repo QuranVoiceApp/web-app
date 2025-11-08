@@ -111,10 +111,10 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
   try { window.__qvtFlagTokens = ffTokens.slice(); } catch {}
   const activeFlags = ffTokens.join(',') || 'none';
   const sendParam = (urlParams.get('send') || '').toLowerCase();
-  // Force json+seq transport for stability across Chrome/iOS
-  const wantsSeqJson = true;
-  const wantsBinary = false;
-  let resolvedSendPath = 'json+seq';
+  // TEMPORARY FIX: Use binary mode as JSON path has buffering issues
+  const wantsSeqJson = false;
+  const wantsBinary = true;
+  let resolvedSendPath = 'binary';
   let sendMode = resolvedSendPath;
 
   try {
@@ -1970,7 +1970,15 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
         }
         break;
       case 'input_audio_buffer.committed':
-        // No-op: counters reset on our own commit helper
+        // CRITICAL FIX: Reset counters when OpenAI acknowledges commit
+        // OpenAI clears its buffer after committing, so we must stop sending commits
+        // until new audio accumulates
+        framesSinceCommit = 0;
+        msSinceLastCommit = 0;
+        bytesSinceCommit = 0;
+        state.appendsSinceCommit = 0;
+        commitRequiredBytes = 0;
+        log('✅ commit acknowledged by OpenAI, counters reset');
         break;
       case 'input_audio_buffer.cleared': {
         // Reset commit gating counters when server clears buffer
