@@ -70,12 +70,12 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
   // URL params early so we can honor ws override
   const urlParams = new URLSearchParams(location.search);
   const wsOverride = urlParams.get('ws') || urlParams.get('ws_url');
-  // Check for Protocol v2 opt-in
-  const useProtocolV2 = localStorage.getItem("useProtocolV2") === "true";
+  // FORCE Protocol v2: Deterministic audio handling with server-controlled commits
+  const useProtocolV2 = true;  // Force enable to fix buffer management issues
   const wsUrl = useProtocolV2
     ? (wsOverride || ((window.Env && window.Env.WS_URL_V2) || 'wss://quran.asimo.io/realtime/v2'))
     : (wsOverride || ((window.Env && window.Env.WS_URL) || 'wss://quran.asimo.io/realtime/v1/ws'));
-  if (useProtocolV2) log('🚀 Protocol v2 enabled');
+  if (useProtocolV2) log('🚀 Protocol v2 FORCED ENABLED - server-controlled commits');
   try { const elWs = $('wsUrl'); if (elWs) elWs.textContent = wsUrl; } catch {}
   const ffTokens = (urlParams.get('ff') || '').split(',').filter(Boolean);
   const FF = (() => {
@@ -111,10 +111,11 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
   try { window.__qvtFlagTokens = ffTokens.slice(); } catch {}
   const activeFlags = ffTokens.join(',') || 'none';
   const sendParam = (urlParams.get('send') || '').toLowerCase();
-  // TEMPORARY FIX: Use binary mode as JSON path has buffering issues
+  // ENABLE PROTOCOL V2: Server-controlled commits, deterministic audio handling
+  // This fundamentally fixes race conditions with OpenAI buffer management
   const wantsSeqJson = false;
-  const wantsBinary = true;
-  let resolvedSendPath = 'binary';
+  const wantsBinary = false;
+  let resolvedSendPath = 'v2';  // Force Protocol v2
   let sendMode = resolvedSendPath;
 
   try {
