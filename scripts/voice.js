@@ -70,7 +70,12 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
   // URL params early so we can honor ws override
   const urlParams = new URLSearchParams(location.search);
   const wsOverride = urlParams.get('ws') || urlParams.get('ws_url');
-  const wsUrl = wsOverride || ((window.Env && window.Env.WS_URL) || 'wss://quran.asimo.io/realtime/v1/ws');
+  // Check for Protocol v2 opt-in
+  const useProtocolV2 = localStorage.getItem("useProtocolV2") === "true";
+  const wsUrl = useProtocolV2
+    ? (wsOverride || ((window.Env && window.Env.WS_URL_V2) || 'wss://quran.asimo.io/realtime/v2'))
+    : (wsOverride || ((window.Env && window.Env.WS_URL) || 'wss://quran.asimo.io/realtime/v1/ws'));
+  if (useProtocolV2) log('🚀 Protocol v2 enabled');
   try { const elWs = $('wsUrl'); if (elWs) elWs.textContent = wsUrl; } catch {}
   const ffTokens = (urlParams.get('ff') || '').split(',').filter(Boolean);
   const FF = (() => {
@@ -321,13 +326,13 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
       else setTimeout(bindLater, 0);
     } catch {}
   };
-  // Strict commit gating counters – do not commit unless ≥6 frames (≈120ms) and ≥5760 bytes
+  // Strict commit gating counters – do not commit unless ≥7 frames (140ms) and ≥6720 bytes to prevent OpenAI buffer too small errors
   let framesSinceCommit = 0;
   let msSinceLastCommit = 0;
   let bytesSinceCommit = 0;
-  const MIN_COMMIT_MS = 120;
-  const MIN_COMMIT_FRAMES = 6;
-  const MIN_COMMIT_BYTES = 5760; // 24kHz PCM16 → 48 bytes/ms
+  const MIN_COMMIT_MS = 140;  // Increased to ensure backend gate passes (120ms) + safety margin
+  const MIN_COMMIT_FRAMES = 7;  // 7 frames × 20ms = 140ms
+  const MIN_COMMIT_BYTES = 6720; // 140ms @ 24kHz PCM16 = 6720 bytes
   let commitRequiredBytes = 0; // raised temporarily when server defers
   const IDLE_COMMIT_MS = 1200;
   const scheduleIdleCommit = (reason = 'timer') => {
@@ -337,7 +342,8 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
     }
     state.idleCommitTimer = setTimeout(() => {
       state.idleCommitTimer = null;
-      if (state.ws && state.ws.readyState === 1) {
+      // Only use v1 commit logic if NOT using Protocol v2
+      if (!state.useProtocolV2 && state.ws && state.ws.readyState === 1) {
         const need = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
         if (!state.responseActive && bytesSinceCommit >= need && (metrics.sentAppends||0) > 0) {
           const hadBytes = bytesSinceCommit;
@@ -365,12 +371,13 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
           const framesOk = framesSinceCommit >= MIN_COMMIT_FRAMES;
           const need = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
           const bytesOk = bytesSinceCommit >= need;
-          if (ageOk && framesOk && bytesOk && (metrics.sentAppends||0) > 0) {
+          // Only use v1 commit logic if NOT using Protocol v2
+          if (!state.useProtocolV2 && ageOk && framesOk && bytesOk && (metrics.sentAppends||0) > 0) {
             const hadBytes = bytesSinceCommit;
             if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${hadBytes} need=${need}`);
-          } else if (!framesOk) {
+          } else if (!state.useProtocolV2 && !framesOk) {
             try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
-          } else if (!bytesOk) {
+          } else if (!state.useProtocolV2 && !bytesOk) {
             try { log(`commit.skipped bytes=${bytesSinceCommit}`); } catch {}
           }
         } catch {}
@@ -1009,7 +1016,92 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
           }).catch(()=>{});
         } catch {}
       }
-      const ws = new WebSocket(wsUrl);
+
+      // Protocol v2 initialization - skip v1 WebSocket entirely
+      if (useProtocolV2 && window.ProtocolV2) {
+        try {
+          log('[ProtocolV2] Initializing...');
+          // Store v2 flag in state for later checks
+          state.useProtocolV2 = true;
+          state.protocolV2Client = null; // Will be initialized after audio context is ready
+          state.connected = true;
+          setConn(true);
+
+          // Initialize audio context for Protocol v2
+          if (!state.playCtx) {
+            state.playCtx = new (window.AudioContext || window.webkitAudioContext)();
+            state.playCursor = state.playCtx.currentTime;
+          }
+          if (!state.sinkDest) {
+            state.sinkDest = new MediaStreamAudioDestinationNode(state.playCtx);
+          }
+          const outEl = state.outEl || document.getElementById('qvtOut');
+          if (outEl && outEl.srcObject !== state.sinkDest.stream) {
+            outEl.srcObject = state.sinkDest.stream;
+          }
+          if (outEl) {
+            outEl.setAttribute('playsinline', '');
+            outEl.autoplay = true;
+            if (!state.audioUnlocked) outEl.muted = true;
+            updateMuteTestid();
+            state.outEl = outEl;
+            state.sinkEl = outEl;
+            try { outEl.play?.(); } catch {}
+          }
+          if (state.audioUnlockPending || (isIOS && !state.audioUnlocked)) {
+            state.audioUnlockPending = true;
+            unlockIOSAudio(state.playCtx);
+          }
+
+          // Create Protocol v2 client
+          log('[ProtocolV2] Creating client with audio context');
+          const p2 = new window.ProtocolV2(wsUrl, state.playCtx, {
+            sampleRateHz: 24000,
+            minMs: 140,
+            proposeIntervalMs: 100
+          });
+
+          // Set up event handlers
+          p2.onReady = () => {
+            log('[ProtocolV2] Ready to send audio');
+            state.protocolV2Ready = true;
+          };
+
+          p2.onFrameAck = (frameId) => {
+            // Frame acknowledged
+          };
+
+          p2.onCommitAck = (ack) => {
+            if (ack.status === 'accept') {
+              log(`[ProtocolV2] Commit accepted: ${ack.ms}ms`);
+            } else if (ack.status === 'defer') {
+              log(`[ProtocolV2] Commit deferred: need ${ack.min_ms_needed}ms more`);
+            }
+          };
+
+          p2.onError = (error) => {
+            logError('[ProtocolV2]', error);
+          };
+
+          // Connect Protocol v2 client
+          p2.connect().then(() => {
+            log('[ProtocolV2] Connected');
+            state.protocolV2Client = p2;
+          }).catch((err) => {
+            logError('[ProtocolV2] Connect failed', err);
+            state.useProtocolV2 = false;
+            state.protocolV2Client = null;
+          });
+        } catch (e) {
+          log('[ProtocolV2] Init error:', e?.message || e);
+          // Fall back to v1 on error
+          state.useProtocolV2 = false;
+        }
+      }
+
+      // Only create v1 WebSocket if NOT using Protocol v2
+      if (!useProtocolV2) {
+        const ws = new WebSocket(wsUrl);
       ws.binaryType = 'arraybuffer';
 
       ws.onopen = () => {
@@ -1089,6 +1181,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
           state.audioUnlockPending = true;
           unlockIOSAudio(state.playCtx);
         }
+
         // Prepare jitter buffer for TTS playback (smooths network jitter)
         try {
           class TtsJitterBuffer {
@@ -1439,6 +1532,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
           resetInitialGreeting();
         }
       };
+      } // End of if (!useProtocolV2)
     } catch (e) {
       log('Connect failed', e.message || e);
     }
@@ -1859,8 +1953,8 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
             setTtsGain(1.0);
           }
         }
-        // Optional auto-commit flow on silence — allow >= ~96ms on speech stop, else wait
-        if (t === 'input_audio_buffer.speech_ended' && $('autoCommit')?.checked) {
+        // Optional auto-commit flow on silence — allow >= ~96ms on speech stop, else wait (v1 only)
+        if (!state.useProtocolV2 && t === 'input_audio_buffer.speech_ended' && $('autoCommit')?.checked) {
           try {
             // Allow slightly lower threshold on explicit speech stop (>= ~96ms / 4608B)
             const tol = 4608; // ~96ms @ 24k/pcm16
@@ -2087,6 +2181,50 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
   }
 
   function sendAudioFrameBuffer(pcmBuf) {
+    // DEBUG: Log every call to see what's happening
+    const debugOnce = !window.__debugLoggedOnce;
+    if (debugOnce) {
+      window.__debugLoggedOnce = true;
+      log(`[DEBUG] sendAudioFrameBuffer called. useProtocolV2=${state.useProtocolV2}, client=${!!state.protocolV2Client}, ready=${state.protocolV2Ready}`);
+    }
+
+    // Use Protocol v2 if available
+    if (state.useProtocolV2) {
+      // Debug which conditions are failing
+      if (!state.protocolV2Client) {
+        log('[ProtocolV2] DEBUG: No client yet');
+        return false;
+      }
+      if (!state.protocolV2Ready) {
+        log('[ProtocolV2] DEBUG: Not ready yet');
+        return false;
+      }
+
+      try {
+        const base64Audio = arrayBufferToBase64(pcmBuf);
+        const timestamp = Date.now();
+        state.protocolV2Client.sendFrame(base64Audio, timestamp);
+
+        // Track metrics (Protocol v2 handles commits internally)
+        framesSinceCommit += 1;
+        msSinceLastCommit += 20;
+        state.appendsSinceCommit = (state.appendsSinceCommit || 0) + 1;
+        try { bytesSinceCommit += pcmBuf.byteLength || 0; } catch { bytesSinceCommit = 0; }
+
+        // Log progress
+        if (framesSinceCommit % 100 === 0) {
+          logAudio(`[ProtocolV2] capture progress: ${framesSinceCommit}fr (${msSinceLastCommit}ms, ${bytesSinceCommit}B)`);
+        }
+        return true;
+      } catch (err) {
+        logError('[ProtocolV2] sendFrame error', err);
+        // Fall back to v1 on error
+        state.useProtocolV2 = false;
+        state.protocolV2Client = null;
+      }
+    }
+
+    // v1 protocol (original code)
     if (!state.ws || state.ws.readyState !== 1) return false;
     try {
       if (resolvedSendPath === 'json+seq' || resolvedSendPath === 'json') {
@@ -2227,9 +2365,10 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
         if (state.ingressPauseUntil && Date.now() < state.ingressPauseUntil) {
           continue;
         }
-        if (state.ws && state.ws.readyState === 1) {
+        // Allow sending if v1 WebSocket is ready OR Protocol v2 is enabled
+        if ((state.ws && state.ws.readyState === 1) || state.useProtocolV2) {
           try {
-            const ba = state.ws.bufferedAmount || 0;
+            const ba = (state.ws && state.ws.bufferedAmount) || 0;
             if (ba > MAX_BUFFERED * 4) { if (diag) log('backpressure drop', String(ba)); continue; }
             if (sendAudioFrameBuffer(pcmBuf)) {
               metrics.sentAppends += 1;
@@ -2248,16 +2387,19 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
         sentAny = true;
         armInactivityCommit();
         try { if (state.stragglerTimer) clearTimeout(state.stragglerTimer); } catch {}
-        state.stragglerTimer = setTimeout(() => {
-          try {
-            if (framesSinceCommit >= MIN_COMMIT_FRAMES && bytesSinceCommit >= Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)) {
-              const hadBytes = bytesSinceCommit;
-              if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${hadBytes} need=${Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)}`);
-            } else {
-              try { log(`commit.suppressed reason=straggler have=${bytesSinceCommit} need=${MIN_COMMIT_BYTES}`); } catch {}
-            }
-          } catch {}
-        }, 30);
+        // Only use v1 commit logic if NOT using Protocol v2 (which handles commits internally)
+        if (!state.useProtocolV2) {
+          state.stragglerTimer = setTimeout(() => {
+            try {
+              if (framesSinceCommit >= MIN_COMMIT_FRAMES && bytesSinceCommit >= Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)) {
+                const hadBytes = bytesSinceCommit;
+                if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${hadBytes} need=${Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)}`);
+              } else {
+                try { log(`commit.suppressed reason=straggler have=${bytesSinceCommit} need=${MIN_COMMIT_BYTES}`); } catch {}
+              }
+            } catch {}
+          }, 30);
+        }
       }
 
       carry = (offset < combined.length) ? combined.subarray(offset).slice(0) : new Float32Array(0);
@@ -2894,9 +3036,9 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
     teardownDriftTracker();
     clearResumeAudioTimer('reset');
     clearIdleCommit();
-    // Commit the audio buffer to trigger response
+    // Commit the audio buffer to trigger response (v1 only - v2 handles commits internally)
     try {
-      if (sendAudioCommit('stopMic')) {
+      if (!state.useProtocolV2 && sendAudioCommit('stopMic')) {
         state.ws.send(JSON.stringify({ type: 'response.create' }));
       }
     } catch {}
