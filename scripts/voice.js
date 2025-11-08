@@ -70,12 +70,12 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
   // URL params early so we can honor ws override
   const urlParams = new URLSearchParams(location.search);
   const wsOverride = urlParams.get('ws') || urlParams.get('ws_url');
-  // FORCE Protocol v2: Deterministic audio handling with server-controlled commits
-  const useProtocolV2 = true;  // Force enable to fix buffer management issues
+  // Protocol v2 is now production-ready with full OpenAI integration
+  const useProtocolV2 = true;
   const wsUrl = useProtocolV2
     ? (wsOverride || ((window.Env && window.Env.WS_URL_V2) || 'wss://quran.asimo.io/realtime/v2'))
     : (wsOverride || ((window.Env && window.Env.WS_URL) || 'wss://quran.asimo.io/realtime/v1/ws'));
-  if (useProtocolV2) log('🚀 Protocol v2 FORCED ENABLED - server-controlled commits');
+  if (useProtocolV2) log('🚀 Protocol v2 enabled');
   try { const elWs = $('wsUrl'); if (elWs) elWs.textContent = wsUrl; } catch {}
   const ffTokens = (urlParams.get('ff') || '').split(',').filter(Boolean);
   const FF = (() => {
@@ -111,11 +111,10 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
   try { window.__qvtFlagTokens = ffTokens.slice(); } catch {}
   const activeFlags = ffTokens.join(',') || 'none';
   const sendParam = (urlParams.get('send') || '').toLowerCase();
-  // ENABLE PROTOCOL V2: Server-controlled commits, deterministic audio handling
-  // This fundamentally fixes race conditions with OpenAI buffer management
+  // Use binary WebSocket mode (JSON path has message delivery issues)
   const wantsSeqJson = false;
-  const wantsBinary = false;
-  let resolvedSendPath = 'v2';  // Force Protocol v2
+  const wantsBinary = true;
+  let resolvedSendPath = 'binary';
   let sendMode = resolvedSendPath;
 
   try {
@@ -1077,6 +1076,69 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
               log(`[ProtocolV2] Commit accepted: ${ack.ms}ms`);
             } else if (ack.status === 'defer') {
               log(`[ProtocolV2] Commit deferred: need ${ack.min_ms_needed}ms more`);
+            }
+          };
+
+          p2.onAudio = (audioB64) => {
+            // Decode and play audio from OpenAI
+            try {
+              const audioBytes = Uint8Array.from(atob(audioB64), c => c.charCodeAt(0));
+              // PCM16 @ 24kHz from OpenAI
+              const audioBuffer = new Int16Array(audioBytes.buffer);
+
+              // Convert to Float32Array for AudioContext
+              const float32 = new Float32Array(audioBuffer.length);
+              for (let i = 0; i < audioBuffer.length; i++) {
+                float32[i] = audioBuffer[i] / 32768.0;
+              }
+
+              // Create AudioBuffer and play
+              const buffer = state.playCtx.createBuffer(1, float32.length, 24000);
+              buffer.getChannelData(0).set(float32);
+
+              const source = state.playCtx.createBufferSource();
+              source.buffer = buffer;
+              source.connect(state.sinkDest || state.playCtx.destination);
+
+              // Schedule audio playback
+              const now = state.playCtx.currentTime;
+              // If playCursor is in the past, reset it to now
+              if (!state.playCursor || state.playCursor < now) {
+                state.playCursor = now;
+              }
+
+              source.start(state.playCursor);
+              state.playCursor += buffer.duration;
+
+              logAudio(`[ProtocolV2] Playing audio: ${audioBytes.length} bytes, ${buffer.duration.toFixed(3)}s at ${state.playCursor.toFixed(3)}s`);
+            } catch (err) {
+              logError('[ProtocolV2] Audio playback error:', err);
+            }
+          };
+
+          p2.onEvent = (event) => {
+            // Handle OpenAI events
+            const eventType = event.type;
+            logAudio(`[ProtocolV2] OpenAI event: ${eventType}`);
+
+            // Reset play cursor on new response
+            if (eventType === 'response.created') {
+              state.playCursor = state.playCtx.currentTime;
+              log('[ProtocolV2] New response - reset play cursor');
+            }
+
+            // Update transcript display
+            if (eventType === 'conversation.item.input_audio_transcription.completed') {
+              const transcript = event.transcript || '';
+              log(`[ProtocolV2] User said: "${transcript}"`);
+              appendTranscript(`You: ${transcript}\n`, true);
+            } else if (eventType === 'response.audio_transcript.delta') {
+              const delta = event.delta || '';
+              appendTranscript(delta, false);
+            } else if (eventType === 'response.audio_transcript.done') {
+              const transcript = event.transcript || '';
+              log(`[ProtocolV2] Assistant said: "${transcript}"`);
+              appendTranscript('\n', true);
             }
           };
 
@@ -2326,12 +2388,15 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
         let chunk = combined.subarray(offset, offset + chunkSamples);
         offset += chunkSamples;
 
-        const gateRms = (state.gateRms != null ? state.gateRms : gateParam);
-        if (gateRms > 0) {
-          let sum = 0;
-          for (let i = 0; i < chunk.length; i++) { const s = chunk[i]; sum += s * s; }
-          const rms = Math.sqrt(sum / Math.max(1, chunk.length));
-          if (rms < gateRms) continue;
+        // Protocol v2 uses server-VAD, so skip client-side noise gate
+        if (!state.useProtocolV2) {
+          const gateRms = (state.gateRms != null ? state.gateRms : gateParam);
+          if (gateRms > 0) {
+            let sum = 0;
+            for (let i = 0; i < chunk.length; i++) { const s = chunk[i]; sum += s * s; }
+            const rms = Math.sqrt(sum / Math.max(1, chunk.length));
+            if (rms < gateRms) continue;
+          }
         }
 
         try {

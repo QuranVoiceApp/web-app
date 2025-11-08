@@ -53,6 +53,8 @@ class ProtocolV2 {
     this.onCommitAck = null;
     this.onError = null;
     this.onDisconnect = null;
+    this.onAudio = null;  // Audio from OpenAI
+    this.onEvent = null;  // OpenAI events
 
     // Statistics
     this.stats = {
@@ -155,6 +157,11 @@ class ProtocolV2 {
       return;
     }
 
+    // Debug: Log first few frames
+    if (this.frameId < 3 || this.frameId % 50 === 0) {
+      console.log(`[ProtocolV2] Sending frame ${this.frameId}, ${pcm16BytesBase64.length} chars`);
+    }
+
     this._sendMessage({
       type: "v2.append",
       turn_id: this.turnId,
@@ -165,11 +172,13 @@ class ProtocolV2 {
 
     this.stats.framesSent++;
 
-    // Auto-propose commits periodically
-    const now = Date.now();
-    if (now - this.lastProposalTime >= this.proposeIntervalMs && !this.pendingCommit) {
-      this.proposeCommit("periodic", this.frameId - 1);
-    }
+    // NOTE: In server-VAD mode, we don't propose commits - OpenAI's VAD decides when to commit
+    // The hybrid commit protocol is disabled for server-VAD
+    // Auto-propose commits periodically (DISABLED for server-VAD)
+    // const now = Date.now();
+    // if (now - this.lastProposalTime >= this.proposeIntervalMs && !this.pendingCommit) {
+    //   this.proposeCommit("periodic", this.frameId - 1);
+    // }
   }
 
   /**
@@ -209,6 +218,23 @@ class ProtocolV2 {
     this._sendMessage({
       type: "v2.keepalive",
     });
+  }
+
+  /**
+   * Cancel current response (barge-in).
+   */
+  cancel() {
+    if (!this.ready) {
+      console.warn("[ProtocolV2] Not ready, skipping cancel");
+      return;
+    }
+
+    this._sendMessage({
+      type: "v2.cancel",
+      turn_id: this.turnId,
+    });
+
+    console.log("[ProtocolV2] Cancel sent (barge-in)");
   }
 
   /**
@@ -279,12 +305,19 @@ class ProtocolV2 {
         if (this.onCommitAck) this.onCommitAck(msg);
         break;
 
-      case "v2.event.speech_started":
-        console.log("[ProtocolV2] Server detected speech start");
+      case "v2.audio":
+        // Audio from OpenAI Realtime API
+        console.log("[ProtocolV2] Received audio chunk from OpenAI");
+        if (this.onAudio && msg.audio) {
+          this.onAudio(msg.audio);
+        }
         break;
 
-      case "v2.event.speech_stopped":
-        console.log("[ProtocolV2] Server detected speech end");
+      case "v2.ack.cancel":
+        console.log("[ProtocolV2] Cancel acknowledged");
+        if (msg.ignored) {
+          console.log(`[ProtocolV2] Cancel ignored: ${msg.reason}`);
+        }
         break;
 
       case "v2.error":
@@ -297,7 +330,17 @@ class ProtocolV2 {
         break;
 
       default:
-        console.warn(`[ProtocolV2] Unknown message type: ${msg.type}`);
+        // Handle v2.event.* messages from OpenAI
+        if (msg.type && msg.type.startsWith("v2.event.")) {
+          const eventType = msg.type.substring(9);  // Remove "v2.event." prefix
+          console.log(`[ProtocolV2] OpenAI event: ${eventType}`);
+
+          if (this.onEvent && msg.event) {
+            this.onEvent(msg.event);
+          }
+        } else {
+          console.warn(`[ProtocolV2] Unknown message type: ${msg.type}`);
+        }
     }
   }
 
