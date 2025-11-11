@@ -1177,9 +1177,10 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
               const audioBuffer = new Int16Array(audioBytes.buffer);
 
               // Convert to Float32Array for AudioContext
+              // Clamp to [-1.0, 1.0] to prevent audio distortion from clipping
               const float32 = new Float32Array(audioBuffer.length);
               for (let i = 0; i < audioBuffer.length; i++) {
-                float32[i] = audioBuffer[i] / 32768.0;
+                float32[i] = Math.max(-1.0, Math.min(1.0, audioBuffer[i] / 32768.0));
               }
 
               // Create AudioBuffer and play
