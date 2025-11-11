@@ -168,13 +168,14 @@ class ProtocolV3 {
         throw new Error(`OpenAI SDP exchange failed: ${sdpResponse.status} ${error}`);
       }
 
-      const sdpData = await sdpResponse.json();
+      // OpenAI returns raw SDP text (not JSON)
+      const sdpText = await sdpResponse.text();
       console.log('[ProtocolV3] Received SDP answer from OpenAI');
 
       // Step 6: Set remote SDP answer
       await this.pc.setRemoteDescription({
         type: 'answer',
-        sdp: sdpData.sdp,
+        sdp: sdpText,
       });
 
       console.log('[ProtocolV3] Remote SDP set, waiting for connection...');
