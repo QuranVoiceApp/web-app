@@ -1045,7 +1045,8 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
             tokenUrl: tokenUrl,
             model: 'gpt-4o-realtime-preview-2024-12-17',
             voice: 'alloy',
-            instructions: 'You are a knowledgeable Islamic studies tutor who helps students learn about the Quran, tafsir, and Islamic sciences.'
+            // instructions: null allows backend to use default AMAL persona
+            instructions: null
           });
 
           // Set up event handlers

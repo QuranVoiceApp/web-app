@@ -31,7 +31,8 @@ class ProtocolV3 {
     this.tokenUrl = opts.tokenUrl || '/realtime/v3/session';
     this.model = opts.model || 'gpt-4o-realtime-preview-2024-12-17';
     this.voice = opts.voice || 'alloy';
-    this.instructions = opts.instructions || 'You are a helpful AI assistant.';
+    // Only use fallback if instructions not provided; null means use backend default
+    this.instructions = opts.instructions !== undefined ? opts.instructions : 'You are a helpful AI assistant.';
 
     // WebRTC components
     this.pc = null;                 // RTCPeerConnection
@@ -188,11 +189,15 @@ class ProtocolV3 {
       this.localStream = await navigator.mediaDevices.getUserMedia(mergedConstraints);
       console.log('[ProtocolV3] Microphone access granted');
 
-      // Add audio track to peer connection
-      const audioTrack = this.localStream.getAudioTracks()[0];
-      this.pc.addTrack(audioTrack, this.localStream);
+      // Add audio track to peer connection (only if peer connection exists)
+      if (this.pc) {
+        const audioTrack = this.localStream.getAudioTracks()[0];
+        this.pc.addTrack(audioTrack, this.localStream);
+        console.log('[ProtocolV3] Audio track added to peer connection');
+      } else {
+        console.warn('[ProtocolV3] Peer connection not initialized, cannot add track');
+      }
 
-      console.log('[ProtocolV3] Audio track added to peer connection');
       return this.localStream;
 
     } catch (error) {
@@ -210,6 +215,32 @@ class ProtocolV3 {
       this.localStream.getTracks().forEach(track => track.stop());
       this.localStream = null;
       console.log('[ProtocolV3] Microphone stopped');
+    }
+  }
+
+  /**
+   * Mute microphone (disable audio track without stopping it).
+   */
+  muteMicrophone() {
+    if (this.localStream) {
+      const audioTracks = this.localStream.getAudioTracks();
+      audioTracks.forEach(track => {
+        track.enabled = false;
+      });
+      console.log('[ProtocolV3] Microphone muted');
+    }
+  }
+
+  /**
+   * Unmute microphone (enable audio track).
+   */
+  unmuteMicrophone() {
+    if (this.localStream) {
+      const audioTracks = this.localStream.getAudioTracks();
+      audioTracks.forEach(track => {
+        track.enabled = true;
+      });
+      console.log('[ProtocolV3] Microphone unmuted');
     }
   }
 
