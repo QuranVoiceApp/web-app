@@ -18,6 +18,7 @@
     './scripts/watchdog.js',
     './scripts/env.js',
     './scripts/protocol_v2.js',  // Protocol v2 library (opt-in)
+    './scripts/protocol_v3.js',  // Protocol v3 library (WebRTC)
     './scripts/voice.js',
     './scripts/sw-register.js',
   ];
