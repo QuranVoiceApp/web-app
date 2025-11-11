@@ -70,13 +70,16 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
   // URL params early so we can honor ws override
   const urlParams = new URLSearchParams(location.search);
   const wsOverride = urlParams.get('ws') || urlParams.get('ws_url');
-  // Protocol v2 is now production-ready with full OpenAI integration
-  const useProtocolV2 = true;
+  // Check for Protocol v3 setting (WebRTC) - requires explicit opt-in via settings
+  const useProtocolV3 = window.ASIMO_SETTINGS?.useProtocolV3 || urlParams.get('protocol') === 'v3';
+  // Protocol v2 is production-ready with full OpenAI integration (default unless v3 enabled)
+  const useProtocolV2 = !useProtocolV3;
   const wsUrl = useProtocolV2
     ? (wsOverride || ((window.Env && window.Env.WS_URL_V2) || 'wss://quran.asimo.io/realtime/v2'))
     : (wsOverride || ((window.Env && window.Env.WS_URL) || 'wss://quran.asimo.io/realtime/v1/ws'));
-  if (useProtocolV2) log('🚀 Protocol v2 enabled');
-  try { const elWs = $('wsUrl'); if (elWs) elWs.textContent = wsUrl; } catch {}
+  if (useProtocolV3) log('🚀 Protocol v3 (WebRTC) enabled');
+  else if (useProtocolV2) log('🚀 Protocol v2 enabled');
+  try { const elWs = $('wsUrl'); if (elWs) elWs.textContent = useProtocolV3 ? 'WebRTC (v3)' : wsUrl; } catch {}
   const ffTokens = (urlParams.get('ff') || '').split(',').filter(Boolean);
   const FF = (() => {
     const set = new Set(ffTokens);
@@ -1017,8 +1020,95 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
         } catch {}
       }
 
+      // Protocol v3 initialization (WebRTC) - highest priority if enabled
+      if (useProtocolV3 && window.ProtocolV3) {
+        try {
+          log('[ProtocolV3] Initializing WebRTC connection...');
+          state.useProtocolV3 = true;
+          state.protocolV3Client = null;
+          state.connected = true;
+          setConn(true);
+
+          // Create Protocol v3 client with backend token URL
+          const tokenUrl = 'https://quran.asimo.io/realtime/v3/session';
+          log('[ProtocolV3] Creating client with tokenUrl:', tokenUrl);
+          const p3 = new window.ProtocolV3({
+            tokenUrl: tokenUrl,
+            model: 'gpt-4o-realtime-preview-2024-12-17',
+            voice: 'alloy',
+            instructions: 'You are a knowledgeable Islamic studies tutor who helps students learn about the Quran, tafsir, and Islamic sciences.'
+          });
+
+          // Set up event handlers
+          p3.onReady = () => {
+            log('[ProtocolV3] WebRTC connection ready');
+            state.protocolV3Ready = true;
+          };
+
+          p3.onAudio = (stream) => {
+            // Handle remote audio stream from OpenAI
+            try {
+              log('[ProtocolV3] Received remote audio stream');
+              const outEl = state.outEl || document.getElementById('qvtOut');
+              if (outEl) {
+                outEl.srcObject = stream;
+                outEl.play().catch(err => logError('[ProtocolV3] Audio play error:', err));
+              }
+            } catch (err) {
+              logError('[ProtocolV3] Stream handling error:', err);
+            }
+          };
+
+          p3.onEvent = (event) => {
+            const eventType = event.type;
+            logAudio(`[ProtocolV3] OpenAI event: ${eventType}`);
+
+            // Update transcript display
+            if (eventType === 'conversation.item.input_audio_transcription.completed') {
+              const transcript = event.transcript || '';
+              log(`[ProtocolV3] User said: "${transcript}"`);
+              appendTranscript(`You: ${transcript}\n`, true);
+            } else if (eventType === 'response.audio_transcript.delta') {
+              const delta = event.delta || '';
+              appendTranscript(delta, false);
+            } else if (eventType === 'response.audio_transcript.done') {
+              const transcript = event.transcript || '';
+              log(`[ProtocolV3] Assistant said: "${transcript}"`);
+              appendTranscript('\n', true);
+            }
+          };
+
+          p3.onError = (error) => {
+            logError('[ProtocolV3]', error);
+          };
+
+          p3.onDisconnect = () => {
+            log('[ProtocolV3] Disconnected');
+            disconnect();
+          };
+
+          p3.onConnectionState = (state) => {
+            log('[ProtocolV3] Connection state:', state);
+          };
+
+          // Connect Protocol v3 client
+          await p3.connect();
+          log('[ProtocolV3] Connected successfully');
+          state.protocolV3Client = p3;
+
+          // Start microphone for v3 (will be handled by WebRTC)
+          // Note: Mic handling in v3 is different - integrated into WebRTC stream
+
+        } catch (e) {
+          log('[ProtocolV3] Init error:', e?.message || e);
+          // Fall back to v2 on error
+          state.useProtocolV3 = false;
+          logError('[ProtocolV3] Falling back to Protocol v2');
+        }
+      }
+
       // Protocol v2 initialization - skip v1 WebSocket entirely
-      if (useProtocolV2 && window.ProtocolV2) {
+      else if (useProtocolV2 && window.ProtocolV2) {
         try {
           log('[ProtocolV2] Initializing...');
           // Store v2 flag in state for later checks
@@ -3180,7 +3270,23 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
   bindOnce('#btnConnect', 'click', async (ev) => {
     try { ev.preventDefault?.(); } catch {}
     log('connect.click');
-    if (state.connected) { try { state.ws && state.ws.close(); } catch {}; return; }
+    if (state.connected) {
+      // Handle disconnection for v3, v2, or v1
+      try {
+        if (state.protocolV3Client) {
+          log('[ProtocolV3] Disconnecting...');
+          state.protocolV3Client.disconnect?.();
+          state.protocolV3Client = null;
+        }
+        if (state.protocolV2Client) {
+          log('[ProtocolV2] Disconnecting...');
+          state.protocolV2Client.disconnect?.();
+          state.protocolV2Client = null;
+        }
+        state.ws && state.ws.close();
+      } catch {}
+      return;
+    }
     state.audioUnlockPending = true;
     try { state.playCtx?.resume(); state.audioContext?.resume(); setTtsGain(1.0); } catch {}
     await startConnection();
