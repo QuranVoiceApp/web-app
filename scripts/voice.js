@@ -77,6 +77,8 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
   const wsUrl = useProtocolV2
     ? (wsOverride || ((window.Env && window.Env.WS_URL_V2) || 'wss://quran.asimo.io/realtime/v2'))
     : (wsOverride || ((window.Env && window.Env.WS_URL) || 'wss://quran.asimo.io/realtime/v1/ws'));
+  // Debug logging for protocol selection
+  log(`[Protocol] Selection: v3=${useProtocolV3}, localStorage='${localStorage.getItem('useProtocolV3')}', ASIMO=${window.ASIMO_SETTINGS?.useProtocolV3}`);
   if (useProtocolV3) log('🚀 Protocol v3 (WebRTC) enabled');
   else if (useProtocolV2) log('🚀 Protocol v2 enabled');
   try { const elWs = $('wsUrl'); if (elWs) elWs.textContent = useProtocolV3 ? 'WebRTC (v3)' : wsUrl; } catch {}
@@ -1002,7 +1004,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
     if (state.ws) return;
     // Allow connect even if SW controller is active (we unregistered on load)
     try {
-      log('Connecting to', wsUrl);
+      log('[Connect] Initiating connection...');
       if (diag) {
         try {
           log('ua', navigator.userAgent);
@@ -1020,8 +1022,15 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
         } catch {}
       }
 
-      // Protocol v3 initialization (WebRTC) - highest priority if enabled
-      if (useProtocolV3 && window.ProtocolV3) {
+      // Protocol v3 initialization (WebRTC) - check current setting value
+      // Use current setting value, not page-load constant
+      const currentUseV3 = window.ASIMO_SETTINGS?.useProtocolV3 || urlParams.get('protocol') === 'v3';
+      log(`[Protocol] Dynamic check at connect: currentUseV3=${currentUseV3}, window.ProtocolV3=${!!window.ProtocolV3}, window.ProtocolV2=${!!window.ProtocolV2}`);
+
+      let protocolInitialized = false;
+
+      // Protocol v3 WebRTC path
+      if (currentUseV3 && window.ProtocolV3) {
         try {
           log('[ProtocolV3] Initializing WebRTC connection...');
           state.useProtocolV3 = true;
@@ -1036,7 +1045,8 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
             tokenUrl: tokenUrl,
             model: 'gpt-4o-realtime-preview-2024-12-17',
             voice: 'alloy',
-            instructions: 'You are a knowledgeable Islamic studies tutor who helps students learn about the Quran, tafsir, and Islamic sciences.'
+            // instructions: null allows backend to use default AMAL persona
+            instructions: null
           });
 
           // Set up event handlers
@@ -1052,6 +1062,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
               const outEl = state.outEl || document.getElementById('qvtOut');
               if (outEl) {
                 outEl.srcObject = stream;
+                outEl.muted = false;  // Unmute to allow audio playback
                 outEl.play().catch(err => logError('[ProtocolV3] Audio play error:', err));
               }
             } catch (err) {
@@ -1095,6 +1106,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
           await p3.connect();
           log('[ProtocolV3] Connected successfully');
           state.protocolV3Client = p3;
+          protocolInitialized = true;
 
           // Start microphone for v3 (will be handled by WebRTC)
           // Note: Mic handling in v3 is different - integrated into WebRTC stream
@@ -1105,10 +1117,14 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
           state.useProtocolV3 = false;
           logError('[ProtocolV3] Falling back to Protocol v2');
         }
+      } else if (currentUseV3 && !window.ProtocolV3) {
+        log('[Protocol] WARNING: Protocol v3 requested but window.ProtocolV3 is not available. Falling back to Protocol v2.');
       }
 
-      // Protocol v2 initialization - skip v1 WebSocket entirely
-      else if (useProtocolV2 && window.ProtocolV2) {
+      // Protocol v2 initialization
+      // Use v2 if: (1) v3 not requested, OR (2) v3 requested but failed/unavailable
+      // Skip v1 WebSocket entirely
+      if (!protocolInitialized && window.ProtocolV2) {
         try {
           log('[ProtocolV2] Initializing...');
           // Store v2 flag in state for later checks
@@ -1143,9 +1159,10 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
             unlockIOSAudio(state.playCtx);
           }
 
-          // Create Protocol v2 client
-          log('[ProtocolV2] Creating client with audio context');
-          const p2 = new window.ProtocolV2(wsUrl, state.playCtx, {
+          // Create Protocol v2 client with correct v2 URL (not page-load wsUrl)
+          const v2Url = 'wss://quran.asimo.io/realtime/v2';
+          log('[ProtocolV2] Creating client with audio context, url:', v2Url);
+          const p2 = new window.ProtocolV2(v2Url, state.playCtx, {
             sampleRateHz: 24000,
             minMs: 140,
             proposeIntervalMs: 100
@@ -1177,9 +1194,10 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
               const audioBuffer = new Int16Array(audioBytes.buffer);
 
               // Convert to Float32Array for AudioContext
+              // Clamp to [-1.0, 1.0] to prevent audio distortion from clipping
               const float32 = new Float32Array(audioBuffer.length);
               for (let i = 0; i < audioBuffer.length; i++) {
-                float32[i] = audioBuffer[i] / 32768.0;
+                float32[i] = Math.max(-1.0, Math.min(1.0, audioBuffer[i] / 32768.0));
               }
 
               // Create AudioBuffer and play
@@ -1236,15 +1254,19 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
             logError('[ProtocolV2]', error);
           };
 
+          // Store client immediately so audio frames can be sent
+          state.protocolV2Client = p2;
+
           // Connect Protocol v2 client
           p2.connect().then(() => {
             log('[ProtocolV2] Connected');
-            state.protocolV2Client = p2;
           }).catch((err) => {
             logError('[ProtocolV2] Connect failed', err);
             state.useProtocolV2 = false;
             state.protocolV2Client = null;
           });
+
+          protocolInitialized = true;
         } catch (e) {
           log('[ProtocolV2] Init error:', e?.message || e);
           // Fall back to v1 on error
@@ -1252,8 +1274,10 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
         }
       }
 
-      // Only create v1 WebSocket if NOT using Protocol v2
-      if (!useProtocolV2) {
+      // Fallback to v1 WebSocket only if neither v3 nor v2 were initialized
+      if (!protocolInitialized) {
+        log('[Protocol] ERROR: Neither v3 nor v2 could be initialized. No fallback available.');
+        log('[Protocol] Please check that protocol scripts are loaded and try refreshing the page.');
         const ws = new WebSocket(wsUrl);
       ws.binaryType = 'arraybuffer';
 
@@ -3041,6 +3065,14 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
   async function startMic() {
     if (!state.connected) return log('Not connected');
     if (state.micActive) return;
+
+    // Protocol v3 handles microphone through WebRTC - skip web app capture
+    if (state.useProtocolV3 && state.protocolV3Client) {
+      log('[ProtocolV3] Microphone already active via WebRTC, skipping worklet capture');
+      state.micActive = true;
+      $('btnMic').textContent = 'Stop Mic';
+      return;
+    }
     try {
       try {
         console.info(FORCE_SIM ? '[sim] capture=sim, no gUM' : '[mic] capture=mic');
@@ -3171,6 +3203,15 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
 
   function stopMic() {
     if (!state.micActive) return;
+
+    // Protocol v3: Microphone controlled by WebRTC, just update UI state
+    if (state.useProtocolV3 && state.protocolV3Client) {
+      log('[ProtocolV3] Microphone remains active via WebRTC');
+      state.micActive = false;
+      $('btnMic').textContent = 'Start Mic';
+      return;
+    }
+
     try {
       state.processor && state.processor.disconnect();
       state.audioContext && state.audioContext.close();

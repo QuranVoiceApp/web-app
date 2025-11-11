@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Quran Voice Tutor — Voice Mode</title>
     <meta name="theme-color" content="#0b0b0b" />
-    <meta http-equiv="Cache-Control" content="no-store, max-age=0" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' wss://quran.asimo.io; font-src 'self' data:; media-src 'self' blob:; worker-src 'self' blob:; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests">
+    <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="./icons/favicon.svg" />
     <link rel="stylesheet" href="./theme.css" />
@@ -41,6 +42,8 @@
       select:focus-visible,
       input:focus-visible { outline:2px solid #3fa8ff; outline-offset:2px; }
     </style>
+    <!-- Settings must load BEFORE bootstrap to ensure ASIMO_SETTINGS is available -->
+    <script src="./scripts/settings.js"></script>
     <script src="./scripts/bootstrap.js?v=bootstrap3" defer></script>
   </head>
   <body>
@@ -169,7 +172,6 @@
         <p class="muted">This page streams audio to the backend Realtime proxy, which talks to the OpenAI Realtime API.</p>
       </section>
     </main>
-  <script src="scripts/settings.js"></script>
   <style id="asimo-webapp-fixes">
     .connected{ background:#c62828 !important; color:#fff !important; }
     .click-through{ pointer-events:none !important; }
@@ -181,47 +183,6 @@
     <label><input type="checkbox" id="autoDownload"> Auto-download audio</label><br>
     <label><input type="checkbox" id="useProtocolV3"> Use Protocol v3 (WebRTC)</label><br>
   </div>
-  <script>
-   document.addEventListener('DOMContentLoaded', function(){
-     const gear=document.getElementById('settingsGear');
-     const panel=document.getElementById('settingsPanel');
-     console.log('[Settings] Initializing...', {gear: !!gear, panel: !!panel, ASIMO_SETTINGS: !!window.ASIMO_SETTINGS});
-     if(!gear||!panel) {
-       console.error('[Settings] Missing elements!', {gear: !!gear, panel: !!panel});
-       return;
-     }
-     gear.addEventListener('click',function(){
-       console.log('[Settings] Gear clicked!');
-       const isHidden = panel.style.display === 'none' || !panel.style.display || window.getComputedStyle(panel).display === 'none';
-       panel.style.display = isHidden ? 'block' : 'none';
-       console.log('[Settings] Panel toggled:', panel.style.display);
-     });
-     const chk=(id, get, set)=>{
-       const el=document.getElementById(id);
-       if(!el) {
-         console.warn('[Settings] Checkbox not found:', id);
-         return;
-       }
-       try {
-         el.checked = get();
-         el.addEventListener('change',()=>{
-           set(el.checked);
-           console.log('[Settings] Changed:', id, el.checked);
-         });
-       } catch(e) {
-         console.error('[Settings] Error binding:', id, e);
-       }
-     };
-     if(window.ASIMO_SETTINGS) {
-       chk('useServerVAD', ()=>ASIMO_SETTINGS.useServerVAD, v=>ASIMO_SETTINGS.useServerVAD=v);
-       chk('recitationMode', ()=>ASIMO_SETTINGS.recitationMode, v=>ASIMO_SETTINGS.recitationMode=v);
-       chk('autoDownload', ()=>ASIMO_SETTINGS.autoDownload, v=>ASIMO_SETTINGS.autoDownload=v);
-       chk('useProtocolV3', ()=>ASIMO_SETTINGS.useProtocolV3, v=>ASIMO_SETTINGS.useProtocolV3=v);
-     } else {
-       console.error('[Settings] ASIMO_SETTINGS not defined!');
-     }
-     console.log('[Settings] Initialization complete');
-   });
-  </script>
+  <script src="scripts/settings-panel.js?v=1762832241"></script>
   </body>
   </html>
