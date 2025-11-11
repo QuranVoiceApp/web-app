@@ -1061,6 +1061,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
               const outEl = state.outEl || document.getElementById('qvtOut');
               if (outEl) {
                 outEl.srcObject = stream;
+                outEl.muted = false;  // Unmute to allow audio playback
                 outEl.play().catch(err => logError('[ProtocolV3] Audio play error:', err));
               }
             } catch (err) {
@@ -3063,6 +3064,14 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
   async function startMic() {
     if (!state.connected) return log('Not connected');
     if (state.micActive) return;
+
+    // Protocol v3 handles microphone through WebRTC - skip web app capture
+    if (state.useProtocolV3 && state.protocolV3Client) {
+      log('[ProtocolV3] Microphone already active via WebRTC, skipping worklet capture');
+      state.micActive = true;
+      $('btnMic').textContent = 'Stop Mic';
+      return;
+    }
     try {
       try {
         console.info(FORCE_SIM ? '[sim] capture=sim, no gUM' : '[mic] capture=mic');
@@ -3193,6 +3202,15 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
 
   function stopMic() {
     if (!state.micActive) return;
+
+    // Protocol v3: Microphone controlled by WebRTC, just update UI state
+    if (state.useProtocolV3 && state.protocolV3Client) {
+      log('[ProtocolV3] Microphone remains active via WebRTC');
+      state.micActive = false;
+      $('btnMic').textContent = 'Start Mic';
+      return;
+    }
+
     try {
       state.processor && state.processor.disconnect();
       state.audioContext && state.audioContext.close();
