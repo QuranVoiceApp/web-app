@@ -522,4 +522,5 @@ if (typeof module !== 'undefined' && module.exports) {
 }
 if (typeof window !== 'undefined') {
   window.ProtocolV3 = ProtocolV3;
+  console.log('[ProtocolV3] Class exported to window.ProtocolV3');
 }

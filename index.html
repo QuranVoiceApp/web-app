@@ -42,6 +42,8 @@
       select:focus-visible,
       input:focus-visible { outline:2px solid #3fa8ff; outline-offset:2px; }
     </style>
+    <!-- Settings must load BEFORE bootstrap to ensure ASIMO_SETTINGS is available -->
+    <script src="./scripts/settings.js"></script>
     <script src="./scripts/bootstrap.js?v=bootstrap3" defer></script>
   </head>
   <body>
@@ -170,7 +172,6 @@
         <p class="muted">This page streams audio to the backend Realtime proxy, which talks to the OpenAI Realtime API.</p>
       </section>
     </main>
-  <script src="scripts/settings.js"></script>
   <style id="asimo-webapp-fixes">
     .connected{ background:#c62828 !important; color:#fff !important; }
     .click-through{ pointer-events:none !important; }
