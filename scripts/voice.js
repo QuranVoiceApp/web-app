@@ -77,6 +77,8 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
   const wsUrl = useProtocolV2
     ? (wsOverride || ((window.Env && window.Env.WS_URL_V2) || 'wss://quran.asimo.io/realtime/v2'))
     : (wsOverride || ((window.Env && window.Env.WS_URL) || 'wss://quran.asimo.io/realtime/v1/ws'));
+  // Debug logging for protocol selection
+  log(`[Protocol] Selection: v3=${useProtocolV3}, localStorage='${localStorage.getItem('useProtocolV3')}', ASIMO=${window.ASIMO_SETTINGS?.useProtocolV3}`);
   if (useProtocolV3) log('🚀 Protocol v3 (WebRTC) enabled');
   else if (useProtocolV2) log('🚀 Protocol v2 enabled');
   try { const elWs = $('wsUrl'); if (elWs) elWs.textContent = useProtocolV3 ? 'WebRTC (v3)' : wsUrl; } catch {}
@@ -1002,7 +1004,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
     if (state.ws) return;
     // Allow connect even if SW controller is active (we unregistered on load)
     try {
-      log('Connecting to', wsUrl);
+      log('[Connect] Initiating connection...');
       if (diag) {
         try {
           log('ua', navigator.userAgent);
@@ -1023,6 +1025,11 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
       // Protocol v3 initialization (WebRTC) - check current setting value
       // Use current setting value, not page-load constant
       const currentUseV3 = window.ASIMO_SETTINGS?.useProtocolV3 || urlParams.get('protocol') === 'v3';
+      log(`[Protocol] Dynamic check at connect: currentUseV3=${currentUseV3}, window.ProtocolV3=${!!window.ProtocolV3}, window.ProtocolV2=${!!window.ProtocolV2}`);
+
+      let protocolInitialized = false;
+
+      // Protocol v3 WebRTC path
       if (currentUseV3 && window.ProtocolV3) {
         try {
           log('[ProtocolV3] Initializing WebRTC connection...');
@@ -1097,6 +1104,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
           await p3.connect();
           log('[ProtocolV3] Connected successfully');
           state.protocolV3Client = p3;
+          protocolInitialized = true;
 
           // Start microphone for v3 (will be handled by WebRTC)
           // Note: Mic handling in v3 is different - integrated into WebRTC stream
@@ -1107,10 +1115,14 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
           state.useProtocolV3 = false;
           logError('[ProtocolV3] Falling back to Protocol v2');
         }
+      } else if (currentUseV3 && !window.ProtocolV3) {
+        log('[Protocol] WARNING: Protocol v3 requested but window.ProtocolV3 is not available. Falling back to Protocol v2.');
       }
 
-      // Protocol v2 initialization - skip v1 WebSocket entirely
-      else if (!currentUseV3 && window.ProtocolV2) {
+      // Protocol v2 initialization
+      // Use v2 if: (1) v3 not requested, OR (2) v3 requested but failed/unavailable
+      // Skip v1 WebSocket entirely
+      if (!protocolInitialized && window.ProtocolV2) {
         try {
           log('[ProtocolV2] Initializing...');
           // Store v2 flag in state for later checks
@@ -1248,6 +1260,8 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
             state.useProtocolV2 = false;
             state.protocolV2Client = null;
           });
+
+          protocolInitialized = true;
         } catch (e) {
           log('[ProtocolV2] Init error:', e?.message || e);
           // Fall back to v1 on error
@@ -1255,8 +1269,10 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
         }
       }
 
-      // Only create v1 WebSocket if NOT using Protocol v2
-      if (!useProtocolV2) {
+      // Fallback to v1 WebSocket only if neither v3 nor v2 were initialized
+      if (!protocolInitialized) {
+        log('[Protocol] ERROR: Neither v3 nor v2 could be initialized. No fallback available.');
+        log('[Protocol] Please check that protocol scripts are loaded and try refreshing the page.');
         const ws = new WebSocket(wsUrl);
       ws.binaryType = 'arraybuffer';
 
