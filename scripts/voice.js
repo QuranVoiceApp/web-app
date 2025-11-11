@@ -1251,10 +1251,12 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
             logError('[ProtocolV2]', error);
           };
 
+          // Store client immediately so audio frames can be sent
+          state.protocolV2Client = p2;
+
           // Connect Protocol v2 client
           p2.connect().then(() => {
             log('[ProtocolV2] Connected');
-            state.protocolV2Client = p2;
           }).catch((err) => {
             logError('[ProtocolV2] Connect failed', err);
             state.useProtocolV2 = false;
