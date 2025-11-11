@@ -185,7 +185,10 @@
    (function(){
      const gear=document.getElementById('settingsGear'); const panel=document.getElementById('settingsPanel');
      if(!gear||!panel) return;
-     gear.addEventListener('click',()=>{ panel.style.display = (panel.style.display==='none'?'block':'none'); });
+     gear.addEventListener('click',()=>{
+       const isHidden = panel.style.display === 'none' || !panel.style.display || window.getComputedStyle(panel).display === 'none';
+       panel.style.display = isHidden ? 'block' : 'none';
+     });
      const chk=(id, get, set)=>{ const el=document.getElementById(id); if(!el) return; el.checked = get(); el.addEventListener('change',()=>set(el.checked)); };
      chk('useServerVAD', ()=>ASIMO_SETTINGS.useServerVAD, v=>ASIMO_SETTINGS.useServerVAD=v);
      chk('recitationMode', ()=>ASIMO_SETTINGS.recitationMode, v=>ASIMO_SETTINGS.recitationMode=v);
