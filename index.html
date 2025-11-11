@@ -183,14 +183,14 @@
   </div>
   <script>
    (function(){
-     const gear=document.getElementById(settingsGear); const panel=document.getElementById(settingsPanel);
+     const gear=document.getElementById('settingsGear'); const panel=document.getElementById('settingsPanel');
      if(!gear||!panel) return;
-     gear.addEventListener(click,()=>{ panel.style.display = (panel.style.display===none?block:none); });
-     const chk=(id, get, set)=>{ const el=document.getElementById(id); if(!el) return; el.checked = get(); el.addEventListener(change,()=>set(el.checked)); };
-     chk(useServerVAD, ()=>ASIMO_SETTINGS.useServerVAD, v=>ASIMO_SETTINGS.useServerVAD=v);
-     chk(recitationMode, ()=>ASIMO_SETTINGS.recitationMode, v=>ASIMO_SETTINGS.recitationMode=v);
-     chk(autoDownload, ()=>ASIMO_SETTINGS.autoDownload, v=>ASIMO_SETTINGS.autoDownload=v);
-     chk(useProtocolV3, ()=>ASIMO_SETTINGS.useProtocolV3, v=>ASIMO_SETTINGS.useProtocolV3=v);
+     gear.addEventListener('click',()=>{ panel.style.display = (panel.style.display==='none'?'block':'none'); });
+     const chk=(id, get, set)=>{ const el=document.getElementById(id); if(!el) return; el.checked = get(); el.addEventListener('change',()=>set(el.checked)); };
+     chk('useServerVAD', ()=>ASIMO_SETTINGS.useServerVAD, v=>ASIMO_SETTINGS.useServerVAD=v);
+     chk('recitationMode', ()=>ASIMO_SETTINGS.recitationMode, v=>ASIMO_SETTINGS.recitationMode=v);
+     chk('autoDownload', ()=>ASIMO_SETTINGS.autoDownload, v=>ASIMO_SETTINGS.autoDownload=v);
+     chk('useProtocolV3', ()=>ASIMO_SETTINGS.useProtocolV3, v=>ASIMO_SETTINGS.useProtocolV3=v);
    })();
   </script>
   </body>
