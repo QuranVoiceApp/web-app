@@ -83,63 +83,20 @@ class ProtocolV3 {
    */
   async connect() {
     try {
-      console.log('[ProtocolV3] Starting WebRTC connection');
+      console.log('[ProtocolV3] Starting WebRTC connection via backend proxy');
 
-      // Step 1: Get ephemeral token and ICE configuration from backend
-      console.log('[ProtocolV3] Fetching ephemeral token...');
-      const tokenResponse = await fetch(this.tokenUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: this.model,
-          voice: this.voice,
-          instructions: this.instructions,
-        }),
-      });
-
-      if (!tokenResponse.ok) {
-        const error = await tokenResponse.text();
-        throw new Error(`Failed to get ephemeral token: ${tokenResponse.status} ${error}`);
-      }
-
-      const tokenData = await tokenResponse.json();
-      this.ephemeralToken = tokenData.ephemeral_token;
-      this.iceServers = [
-        ...tokenData.ice_servers.map(s => ({ urls: s.urls })),
-        ...tokenData.turn_servers.map(s => ({
-          urls: s.urls,
-          username: s.username,
-          credential: s.credential,
-        })),
-      ];
-
-      console.log('[ProtocolV3] Ephemeral token obtained, expires:', tokenData.expires_at);
-      console.log('[ProtocolV3] ICE servers:', this.iceServers.length);
-
-      // Step 2: Create RTCPeerConnection
-      this.pc = new RTCPeerConnection({
-        iceServers: this.iceServers,
-      });
+      // Step 1: Create RTCPeerConnection (no ICE servers needed, proxy handles it)
+      this.pc = new RTCPeerConnection();
 
       // Set up event handlers
       this._setupPeerConnectionHandlers();
 
-      // Step 3: Create data channel for events
-      this.dataChannel = this.pc.createDataChannel('oai-events', {
-        ordered: true,
-        maxRetransmits: null,  // Infinite retries for reliability
-      });
-
-      this._setupDataChannelHandlers();
-
-      // Step 3.5: Add microphone audio track BEFORE creating offer
+      // Step 2: Add microphone audio track BEFORE creating offer
       console.log('[ProtocolV3] Requesting microphone access...');
       await this.startMicrophone();
       console.log('[ProtocolV3] Microphone track added to peer connection');
 
-      // Step 4: Create SDP offer (now includes audio track)
+      // Step 3: Create SDP offer (includes audio track)
       console.log('[ProtocolV3] Creating SDP offer...');
       const offer = await this.pc.createOffer();
       await this.pc.setLocalDescription(offer);
@@ -147,43 +104,43 @@ class ProtocolV3 {
       // Wait for ICE gathering to complete
       await this._waitForICEGathering();
 
-      // Step 5: Send SDP offer to OpenAI
-      console.log('[ProtocolV3] Sending SDP offer to OpenAI...');
-      const formData = new FormData();
-      formData.append('sdp', this.pc.localDescription.sdp);
-      formData.append('model', this.model);
-
-      // Use /v1/realtime endpoint (NOT /v1/realtime/sessions) for WebRTC SDP exchange
-      const sdpResponse = await fetch('https://api.openai.com/v1/realtime', {
+      // Step 4: Send SDP offer to backend proxy (backend will handle OpenAI connection + KB tools)
+      console.log('[ProtocolV3] Sending SDP offer to backend proxy...');
+      const proxyUrl = this.tokenUrl.replace('/realtime/v3/session', '/realtime/v3/proxy');
+      const sdpResponse = await fetch(proxyUrl, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${this.ephemeralToken}`,
-          'Content-Type': 'application/sdp',  // WebRTC requires SDP content type
+          'Content-Type': 'application/json',
         },
-        body: this.pc.localDescription.sdp,  // Send SDP as body, not FormData
+        body: JSON.stringify({
+          sdp: this.pc.localDescription.sdp,
+          type: this.pc.localDescription.type,
+          model: this.model,
+          voice: this.voice,
+          instructions: this.instructions,
+        }),
       });
 
       if (!sdpResponse.ok) {
         const error = await sdpResponse.text();
-        throw new Error(`OpenAI SDP exchange failed: ${sdpResponse.status} ${error}`);
+        throw new Error(`Backend proxy failed: ${sdpResponse.status} ${error}`);
       }
 
-      // OpenAI returns raw SDP text (not JSON)
-      const sdpText = await sdpResponse.text();
-      console.log('[ProtocolV3] Received SDP answer from OpenAI');
+      const answerData = await sdpResponse.json();
+      console.log('[ProtocolV3] Received SDP answer from backend proxy');
 
-      // Step 6: Set remote SDP answer
+      // Step 5: Set remote SDP answer from backend
       await this.pc.setRemoteDescription({
         type: 'answer',
-        sdp: sdpText,
+        sdp: answerData.sdp,
       });
 
       console.log('[ProtocolV3] Remote SDP set, waiting for connection...');
 
-      // Step 7: Wait for connection
+      // Step 6: Wait for connection
       await this._waitForConnection();
 
-      console.log('[ProtocolV3] WebRTC connection established!');
+      console.log('[ProtocolV3] WebRTC connection established via proxy!');
       this.connected = true;
 
       // Start stats monitoring
@@ -362,28 +319,20 @@ class ProtocolV3 {
         }
       }
     };
+
+    // Handle incoming data channel from backend proxy
+    this.pc.ondatachannel = (event) => {
+      console.log(`[ProtocolV3] Received data channel: ${event.channel.label}`);
+      this.dataChannel = event.channel;
+      this._setupDataChannelHandlers();
+    };
   }
 
   _setupDataChannelHandlers() {
     this.dataChannel.onopen = () => {
       this.stats.dataChannelState = 'open';
       this.ready = true;
-      console.log('[ProtocolV3] Data channel opened');
-
-      // Send initial session configuration
-      this.updateSession({
-        modalities: ['audio', 'text'],
-        instructions: this.instructions,
-        voice: this.voice,
-        input_audio_format: 'pcm16',
-        output_audio_format: 'pcm16',
-        turn_detection: {
-          type: 'server_vad',
-          threshold: 0.5,
-          prefix_padding_ms: 300,
-          silence_duration_ms: 500,
-        },
-      });
+      console.log('[ProtocolV3] Data channel opened (backend proxy will configure session)');
 
       if (this.onReady) this.onReady();
     };
