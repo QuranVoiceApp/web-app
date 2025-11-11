@@ -179,6 +179,7 @@
     <label><input type="checkbox" id="useServerVAD"> Use server VAD</label><br>
     <label><input type="checkbox" id="recitationMode"> Recitation mode</label><br>
     <label><input type="checkbox" id="autoDownload"> Auto-download audio</label><br>
+    <label><input type="checkbox" id="useProtocolV3"> Use Protocol v3 (WebRTC)</label><br>
   </div>
   <script>
    (function(){
@@ -189,6 +190,7 @@
      chk(useServerVAD, ()=>ASIMO_SETTINGS.useServerVAD, v=>ASIMO_SETTINGS.useServerVAD=v);
      chk(recitationMode, ()=>ASIMO_SETTINGS.recitationMode, v=>ASIMO_SETTINGS.recitationMode=v);
      chk(autoDownload, ()=>ASIMO_SETTINGS.autoDownload, v=>ASIMO_SETTINGS.autoDownload=v);
+     chk(useProtocolV3, ()=>ASIMO_SETTINGS.useProtocolV3, v=>ASIMO_SETTINGS.useProtocolV3=v);
    })();
   </script>
   </body>
