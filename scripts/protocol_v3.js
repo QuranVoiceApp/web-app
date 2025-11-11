@@ -148,12 +148,14 @@ class ProtocolV3 {
       formData.append('sdp', this.pc.localDescription.sdp);
       formData.append('model', this.model);
 
-      const sdpResponse = await fetch('https://api.openai.com/v1/realtime/sessions', {
+      // Use /v1/realtime endpoint (NOT /v1/realtime/sessions) for WebRTC SDP exchange
+      const sdpResponse = await fetch('https://api.openai.com/v1/realtime', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${this.ephemeralToken}`,
+          'Content-Type': 'application/sdp',  // WebRTC requires SDP content type
         },
-        body: formData,
+        body: this.pc.localDescription.sdp,  // Send SDP as body, not FormData
       });
 
       if (!sdpResponse.ok) {
