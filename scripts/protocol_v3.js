@@ -134,7 +134,12 @@ class ProtocolV3 {
 
       this._setupDataChannelHandlers();
 
-      // Step 4: Create SDP offer
+      // Step 3.5: Add microphone audio track BEFORE creating offer
+      console.log('[ProtocolV3] Requesting microphone access...');
+      await this.startMicrophone();
+      console.log('[ProtocolV3] Microphone track added to peer connection');
+
+      // Step 4: Create SDP offer (now includes audio track)
       console.log('[ProtocolV3] Creating SDP offer...');
       const offer = await this.pc.createOffer();
       await this.pc.setLocalDescription(offer);

@@ -1157,9 +1157,10 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
             unlockIOSAudio(state.playCtx);
           }
 
-          // Create Protocol v2 client
-          log('[ProtocolV2] Creating client with audio context');
-          const p2 = new window.ProtocolV2(wsUrl, state.playCtx, {
+          // Create Protocol v2 client with correct v2 URL (not page-load wsUrl)
+          const v2Url = 'wss://quran.asimo.io/realtime/v2';
+          log('[ProtocolV2] Creating client with audio context, url:', v2Url);
+          const p2 = new window.ProtocolV2(v2Url, state.playCtx, {
             sampleRateHz: 24000,
             minMs: 140,
             proposeIntervalMs: 100
