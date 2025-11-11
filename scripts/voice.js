@@ -1020,8 +1020,10 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
         } catch {}
       }
 
-      // Protocol v3 initialization (WebRTC) - highest priority if enabled
-      if (useProtocolV3 && window.ProtocolV3) {
+      // Protocol v3 initialization (WebRTC) - check current setting value
+      // Use current setting value, not page-load constant
+      const currentUseV3 = window.ASIMO_SETTINGS?.useProtocolV3 || urlParams.get('protocol') === 'v3';
+      if (currentUseV3 && window.ProtocolV3) {
         try {
           log('[ProtocolV3] Initializing WebRTC connection...');
           state.useProtocolV3 = true;
@@ -1108,7 +1110,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
       }
 
       // Protocol v2 initialization - skip v1 WebSocket entirely
-      else if (useProtocolV2 && window.ProtocolV2) {
+      else if (!currentUseV3 && window.ProtocolV2) {
         try {
           log('[ProtocolV2] Initializing...');
           // Store v2 flag in state for later checks
