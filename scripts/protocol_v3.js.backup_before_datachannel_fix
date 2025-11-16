@@ -24,17 +24,15 @@ class ProtocolV3 {
    * @param {Object} opts - Options
    * @param {string} opts.tokenUrl - Backend URL for ephemeral token (default: '/realtime/v3/session')
    * @param {string} opts.model - OpenAI model (default: 'gpt-4o-realtime-preview-2024-12-17')
-   * @param {string} opts.voice - Voice name (default: 'nova')
+   * @param {string} opts.voice - Voice name (default: 'alloy')
    * @param {string} opts.instructions - System instructions
-   * @param {string} opts.personaMode - Persona mode ('realtime', 'recitation', or 'verbatim')
    */
   constructor(opts = {}) {
     this.tokenUrl = opts.tokenUrl || '/realtime/v3/session';
     this.model = opts.model || 'gpt-4o-realtime-preview-2024-12-17';
-    this.voice = opts.voice || 'nova';
+    this.voice = opts.voice || 'alloy';
     // Only use fallback if instructions not provided; null means use backend default
     this.instructions = opts.instructions !== undefined ? opts.instructions : 'You are a helpful AI assistant.';
-    this.personaMode = opts.personaMode || 'realtime';
 
     // WebRTC components
     this.pc = null;                 // RTCPeerConnection
@@ -99,12 +97,6 @@ class ProtocolV3 {
       await this.startMicrophone();
       console.log('[ProtocolV3] Microphone track added to peer connection');
 
-      // Step 2.5: Create data channel for receiving OpenAI events BEFORE creating offer
-      console.log('[ProtocolV3] Creating data channel for OpenAI events...');
-      this.dataChannel = this.pc.createDataChannel('oai-events');
-      this._setupDataChannelHandlers();
-      console.log('[ProtocolV3] Data channel created, will be included in offer');
-
       // Step 3: Create SDP offer (includes audio track)
       console.log('[ProtocolV3] Creating SDP offer...');
       const offer = await this.pc.createOffer();
@@ -133,7 +125,6 @@ class ProtocolV3 {
           model: this.model,
           voice: this.voice,
           instructions: this.instructions,
-          persona_mode: this.personaMode,  // Add persona mode for dynamic persona selection
         }),
       });
 

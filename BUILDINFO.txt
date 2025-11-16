@@ -1,5 +1,5 @@
-version=dev-local
-commit=local
-short_sha=local
-generated_utc=manual
-repo=local
+version=amal-persona-fix-v2
+commit=1762849522
+short_sha=2c416028
+generated_utc=2025-11-11T08:25:22Z
+repo=quran-voice-tutor

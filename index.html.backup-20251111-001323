@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Quran Voice Tutor — Voice Mode</title>
+    <meta name="theme-color" content="#0b0b0b" />
+    <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="./icons/favicon.svg" />
+    <link rel="stylesheet" href="./theme.css" />
+    <style>
+      body { background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; margin: 0; }
+      header { padding: 24px 16px; border-bottom: 1px solid #202020; }
+      main { padding: 16px; max-width: 960px; margin: 0 auto; }
+      .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+      .card { background: #141414; border: 1px solid #1f1f1f; border-radius: 10px; padding: 16px; }
+      .muted { color: #aaa; }
+      textarea { width: 100%; min-height: 120px; background: #0f0f0f; color: var(--fg); border: 1px solid #1f1f1f; border-radius: 8px; padding: 12px; }
+      input, select { background: #0f0f0f; color: var(--fg); border: 1px solid #1f1f1f; border-radius: 6px; padding: 8px 10px; }
+      .pill { padding: 4px 8px; border-radius: 999px; border: 1px solid #2a2a2a; font-size: 12px; }
+      .ok { color: #27d07a; }
+      .err { color: #ff6b6b; }
+      a { color: var(--link); }
+      .meter { width: 240px; height: 8px; background:#0f0f0f; border:1px solid #1f1f1f; border-radius: 4px; overflow:hidden; }
+      .meter-fill { height: 100%; width: 0%; background: linear-gradient(90deg,#2ddc6c,#ffc107,#ff5252); transition: width .08s linear; }
+      .warn { color:#ffc107 }
+      .ui-pills { display: none; gap: 8px; margin-top: 8px; }
+      .ui-pill { padding: 4px 10px; border-radius: 999px; border: 1px solid #2a2a2a; font-size: 12px; background:#0f0f0f; color:#d0d0d0; }
+      .ui-pill[data-state="on"] { border-color:#3fa8ff; color:#3fa8ff; }
+      .barge-banner { display:none; margin:8px 0; padding:8px 12px; border-radius:8px; background:rgba(63,168,255,0.12); color:#3fa8ff; font-size:14px; }
+      .transcript-dim { opacity:0.5; }
+      #controlBar { position: relative; z-index: 5; pointer-events: auto; }
+      #swBanner { display:none; background:#ffcc00; color:#000; padding:10px 16px; text-align:center; font-size:14px; }
+      #swBanner.active { display:block; }
+      #iosUnlock { position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); display: none; align-items: center; justify-content: center; z-index: 9999; }
+      #iosUnlock.active { display: flex; }
+      #iosUnlock button { font-size: 18px; padding: 14px 22px; border-radius: 14px; border: none; background: var(--brand-accent); color: #0b0b0b; }
+      button:focus-visible,
+      select:focus-visible,
+      input:focus-visible { outline:2px solid #3fa8ff; outline-offset:2px; }
+    </style>
+    <!-- Settings must load BEFORE bootstrap to ensure ASIMO_SETTINGS is available -->
+    <script src="./scripts/settings.js"></script>
+    <script src="./scripts/bootstrap.js?v=bootstrap3" defer></script>
+  </head>
+  <body>
+    <div id="qaModeBanner" style="display:none;background:#3fa8ff;color:#001826;padding:8px 12px;text-align:center;font-weight:600">QA mode active</div>
+    <div id="swBanner" role="status" aria-live="polite">A service worker update is pending. Please reload to apply the latest build.</div>
+    <span id="muteState" data-testid="muteState" style="display:none">unknown</span>
+    <div id="bootBanner" role="status" aria-live="assertive" style="display:none;background:#ff6b6b;color:#000;padding:10px 16px;text-align:center;font-size:14px;">Boot error: duplicate scripts detected. Reload the page.</div>
+    <div id="qaModeBanner" role="status" aria-live="polite" style="display:none;background:#3fa8ff;color:#001b33;padding:8px 12px;text-align:center;font-size:13px;">QA mode active</div>
+    <div id="iosUnlock" role="dialog" aria-modal="true">
+      <button id="btnIosUnlock">Tap to start audio</button>
+    </div>
+    <header>
+      <div class="row" style="justify-content: space-between">
+        <div>
+          <h1 class="brand-accent" style="margin: 0">Quran Voice Tutor</h1>
+          <div class="muted">World‑class voice mode • Low‑latency • Verbatim KB reading</div>
+        </div>
+        <div id="conn-pill" class="pill">Disconnected</div>
+      </div>
+    </header>
+    <main>
+      <section class="card">
+        <h2 style="margin-top:0">Voice Test</h2>
+        <div class="row control-bar" id="controlBar">
+          <button id="btnConnect" class="btn-brand" data-state="disconnected" aria-pressed="false" data-testid="btnConnect">Connect</button>
+          <button id="btnMic" disabled data-testid="btnMic">Start Mic</button>
+          <label>VAD Threshold <input id="vadThresh" type="number" min="0" max="1" step="0.05" value="0.7"/></label>
+          <label>Voice <select id="voice"><option value="alloy">alloy</option></select></label>
+          <label><input id="ptt" type="checkbox" /> Push‑to‑talk (hold Space)</label>
+          <label><input id="autoCommit" type="checkbox" checked /> Auto‑commit on silence</label>
+          <button id="btnClear" title="Clear transcript and logs">Clear</button>
+          <button id="btnDownload" title="Download debug log">Download Log</button>
+          <label><input id="rawMic" type="checkbox" /> Raw Mic (no EC/NS/AGC)</label>
+          <button id="btnUseDefault" title="Switch to default input device">Use Default Mic</button>
+          <button id="btnCalibrate" title="Estimate optimal VAD threshold from ambient noise">Calibrate Mic</button>
+          <button id="btnAutoDetect" title="Scan inputs and pick one with signal">Auto‑Detect Mic</button>
+          <button id="btnLoopback" title="Record 1s and play back to verify capture">Loopback 1s</button>
+          <button id="btnResumeAudio" title="Resume AudioContext if suspended">Resume Audio</button>
+          <label>Capture Mode
+            <select id="captureMode">
+              <option value="worklet">worklet</option>
+              <option value="script">script</option>
+            </select>
+          </label>
+          <label><input id="monitor" type="checkbox" /> Monitor Mic</label>
+        </div>
+        <div class="row">
+          <label>Mic Device
+            <select id="device" style="min-width:260px" data-testid="selectDevice"></select>
+          </label>
+          <button id="btnRefreshDevs" title="Refresh input devices">Refresh Devices</button>
+          <span class="muted" id="devInfo"></span>
+        </div>
+        <div class="row">
+          <div id="speakerRow" class="row" style="gap:12px;align-items:center">
+            <label>Speaker Device
+              <select id="speaker" style="min-width:260px" data-testid="speakerSelect"></select>
+            </label>
+            <span class="muted" id="speakerInfo"></span>
+          </div>
+        </div>
+        <p class="muted">Backend WS: <code id="wsUrl"></code></p>
+        <audio id="qvtOut" playsinline autoplay muted hidden></audio>
+        <div class="row" style="gap:8px">
+          <div class="meter"><div id="meterFill" class="meter-fill"></div></div>
+          <div id="meterText" class="muted">level: 0% <span id="clipWarn" class="pill warn" style="display:none">CLIP</span></div>
+          <div id="ingress-pill" class="pill">Ingress 0 / 0 KB</div>
+          <span id="silenceWarn" class="pill warn" style="display:none">Mic appears silent</span>
+        </div>
+        <div id="uiPills" class="row ui-pills" role="status" aria-live="polite">
+          <span class="ui-pill" data-testid="pill-send">binary</span>
+          <span class="ui-pill" data-testid="pill-ingress">0.0 kb/s</span>
+          <span class="ui-pill" data-testid="pill-rtt">–</span>
+          <span class="ui-pill" data-testid="pill-asr" data-state="off">ASR idle</span>
+          <span class="ui-pill" data-testid="pill-barge" data-state="off">Idle</span>
+          <span class="ui-pill" data-testid="pill-playback">0 underruns</span>
+          <span class="ui-pill" data-testid="pill-storage">storage ok</span>
+        </div>
+        <div class="row">
+          <div style="flex:1;min-width:260px">
+            <h4 style="margin:8px 0">Transcript</h4>
+            <div id="bargeBanner" class="barge-banner" role="status" aria-live="polite"></div>
+            <pre id="transcript" aria-live="polite" role="log" data-testid="transcript" style="background:#0f0f0f;border:1px solid #1f1f1f;border-radius:8px;padding:12px;min-height:100px;white-space:pre-wrap"></pre>
+          </div>
+          <div style="flex:1;min-width:260px">
+            <h4 style="margin:8px 0">Logs</h4>
+            <div class="row" style="gap:8px;margin-bottom:6px">
+              <button id="btnCopyLog" title="Copy all debug logs">Copy Log</button>
+              <button id="btnClearLog" title="Clear debug logs">Clear Log</button>
+            </div>
+            <textarea id="log" readonly placeholder="Logs...\n"></textarea>
+          </div>
+        </div>
+        <div class="muted" id="metrics" style="margin-top:8px"></div>
+        <div style="display:none" aria-hidden="true">
+          <span id="commitWin" data-testid="commit-win"></span>
+          <span id="rttEwma" data-testid="rtt-ewma"></span>
+        </div>
+      </section>
+
+      <section style="margin-top:16px" class="card">
+        <div class="row">
+          <div>
+            <h3 style="margin-top:0">Audio Visualizer</h3>
+            <div class="row">
+              <div>
+                <h4 style="margin:8px 0">Waveform</h4>
+                <canvas id="waveform" width="640" height="128" style="background:#0f0f0f;border:1px solid #1f1f1f;border-radius:8px"></canvas>
+              </div>
+              <div>
+                <h4 style="margin:8px 0">Spectrum</h4>
+                <canvas id="spectrum" width="640" height="128" style="background:#0f0f0f;border:1px solid #1f1f1f;border-radius:8px"></canvas>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section style="margin-top:16px" class="card">
+        <h3 style="margin-top:0">Tips</h3>
+        <ul>
+          <li>Ask: “Read Surah Al‑Fatiha in Jalalayn.”</li>
+          <li>Say “Stop” mid‑way to test barge‑in.</li>
+          <li>Try Arabic: “اقرأ من تفسير الجلالين سورة الفاتحة”.</li>
+        </ul>
+        <p class="muted">This page streams audio to the backend Realtime proxy, which talks to the OpenAI Realtime API.</p>
+      </section>
+    </main>
+  <style id="asimo-webapp-fixes">
+    .connected{ background:#c62828 !important; color:#fff !important; }
+    .click-through{ pointer-events:none !important; }
+  </style>
+  <button id="settingsGear" style="position:fixed;top:8px;right:8px;z-index:9999">⚙️</button>
+  <div id="settingsPanel" style="position:fixed;top:40px;right:8px;background:#111;color:#eee;padding:10px;border-radius:8px;display:none;z-index:9999">
+    <label><input type="checkbox" id="useServerVAD"> Use server VAD</label><br>
+    <label><input type="checkbox" id="recitationMode"> Recitation mode</label><br>
+    <label><input type="checkbox" id="autoDownload"> Auto-download audio</label><br>
+    <label><input type="checkbox" id="useProtocolV3"> Use Protocol v3 (WebRTC)</label><br>
+  </div>
+  <script src="scripts/settings-panel.js?v=1762832241"></script>
+  </body>
+  </html>

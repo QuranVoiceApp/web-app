@@ -52,26 +52,6 @@
       </div>
       <hr>
       <div class="settings-group">
-        <div class="settings-title">Voice Selection</div>
-        <label for="conversationVoice">Conversation Voice (Realtime API):</label>
-        <select id="conversationVoice" class="voice-select">
-          <option value="echo" selected>Echo (Default)</option>
-          <option value="alloy">Alloy</option>
-          <option value="shimmer">Shimmer</option>
-          <option value="marin">Marin</option>
-        </select>
-        <label for="narrationVoice">Narration Voice (TTS API):</label>
-        <select id="narrationVoice" class="voice-select">
-          <option value="echo" selected>Echo (Default)</option>
-          <option value="alloy">Alloy</option>
-          <option value="nova">Nova</option>
-          <option value="shimmer">Shimmer</option>
-          <option value="fable">Fable</option>
-          <option value="onyx">Onyx</option>
-        </select>
-      </div>
-      <hr>
-      <div class="settings-group">
         <div class="settings-title">Audio Feedback</div>
         <label><input type="checkbox" id="audibleFeedback" checked> KB searching beep</label>
         <label><input type="checkbox" id="completionChime" checked> Completion chime</label>
@@ -80,11 +60,6 @@
       <div class="settings-group">
         <div class="settings-title">Debug</div>
         <label><input type="checkbox" id="autoDownload"> Auto-download audio</label>
-      </div>
-      <hr>
-      <div class="settings-group">
-        <button id="btnResetSettings" class="btn btn-sm" style="width: 100%; margin-top: 8px;">Reset to Admin Defaults</button>
-        <p style="font-size: 11px; color: #888; margin: 8px 0 0 0;">Clears your personal preferences and uses admin-configured defaults</p>
       </div>
     </div>
 
@@ -96,12 +71,6 @@
         <div id="breather" class="state-idle" role="img" aria-label="Voice status: idle" aria-live="polite">
           <canvas id="viz-canvas" width="320" height="320" aria-hidden="true"></canvas>
           <div id="pulse" aria-hidden="true"></div>
-        </div>
-
-        <!-- Mode Indicator Badge -->
-        <div id="modeIndicator" class="mode-badge" style="display: none;" role="status" aria-live="polite">
-          <span id="modeIcon">💬</span>
-          <span id="modeText">Realtime</span>
         </div>
 
         <!-- 4-Button Controls -->

@@ -1,14 +1,24 @@
-const CACHE_NAME = 'qvt-static-v4';
+const CACHE_NAME = 'qvt-static-v22';
 const ASSETS = [
   '/',
   '/index.html',
   '/theme.css',
+  '/styles/voice-ui.css',
+  '/scripts/bootstrap.js',
+  '/scripts/settings.js',
+  '/scripts/user-auth.js',
+  '/scripts/feedback-collector.js',
   '/scripts/env.js',
-  '/scripts/voice.js',
-  '/scripts/pcm_worklet.js',
-  '/scripts/sw-register.js',
+  '/scripts/protocol_v3.js',
+  '/scripts/ui-controller.js',
+  '/scripts/visualizer.js',
+  '/scripts/audio-feedback.js',
+  '/scripts/now-reading-panel.js',
+  '/scripts/keyboard-shortcuts.js',
+  '/scripts/settings-panel.js',
+  '/scripts/narration-player.js',
   '/manifest.webmanifest',
-  '/icons/favicon.svg',
+  // Note: favicon.svg removed - causes 404 errors, let browser handle it naturally
 ];
 
 self.addEventListener('install', (event) => {

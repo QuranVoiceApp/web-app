@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head><title>Unregister Service Worker</title></head>
+<body>
+<h1>Service Worker Unregister Tool</h1>
+<button onclick="unregister()" style="padding:20px;font-size:18px;background:#ff6b6b;color:white;border:none;border-radius:8px;cursor:pointer">
+  UNREGISTER SERVICE WORKER
+</button>
+<pre id="log" style="margin-top:20px;background:#0f0f0f;color:#0f0;padding:12px"></pre>
+<script>
+async function unregister() {
+  const log = document.getElementById('log');
+  log.textContent = 'Starting unregister...\n';
+  
+  try {
+    const registrations = await navigator.serviceWorker.getRegistrations();
+    log.textContent += `Found ${registrations.length} service worker(s)\n`;
+    
+    for (const reg of registrations) {
+      log.textContent += `Unregistering: ${reg.scope}\n`;
+      await reg.unregister();
+    }
+    
+    log.textContent += '\n✅ SUCCESS! All service workers unregistered.\n';
+    log.textContent += '\nReloading in 2 seconds...';
+    
+    setTimeout(() => location.href = 'https://quran.asimo.io', 2000);
+  } catch (err) {
+    log.textContent += `\n❌ ERROR: ${err.message}`;
+  }
+}
+</script>
+</body>
+</html>

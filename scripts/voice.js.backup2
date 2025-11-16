@@ -1044,7 +1044,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
           const p3 = new window.ProtocolV3({
             tokenUrl: tokenUrl,
             model: 'gpt-4o-realtime-preview-2024-12-17',
-            voice: 'echo',
+            voice: 'alloy',
             // instructions: null allows backend to use default AMAL persona
             instructions: null
           });
@@ -1073,12 +1073,6 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
           p3.onEvent = (event) => {
             const eventType = event.type;
             logAudio(`[ProtocolV3] OpenAI event: ${eventType}`);
-
-            // DEBUG: Log ALL function-related events
-            if (eventType && eventType.includes("function")) {
-              log("[Narration] DEBUG function event:", eventType);
-              log("[Narration] DEBUG event data:", JSON.stringify(event, null, 2));
-            }
 
             // Update transcript display
             if (eventType === 'conversation.item.input_audio_transcription.completed') {

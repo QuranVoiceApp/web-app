@@ -1,0 +1,229 @@
+/**
+ * Server-Side TTS Narration Player
+ * Creates global window.NarrationPlayer and window.narrationPlayer
+ */
+
+(function() {
+  'use strict';
+
+  class NarrationPlayer {
+    constructor() {
+      this.audio = null;
+      this.narrationId = null;
+      this.isPlaying = false;
+      this.streamUrl = null;
+      this.uiCreated = false;
+    }
+
+    ensureUI() {
+      if (this.uiCreated) return;
+
+      const html = `
+        <div id="narration-player" class="narration-player" style="display: none;">
+          <div class="narration-header">
+            <span class="narration-icon">🎙️</span>
+            <span class="narration-title">Server Narration</span>
+            <button id="narration-close" class="narration-close">&times;</button>
+          </div>
+          <div class="narration-info">
+            <div id="narration-book-title" class="narration-book">Loading...</div>
+            <div id="narration-progress" class="narration-progress">Preparing audio...</div>
+          </div>
+          <div class="narration-controls">
+            <button id="narration-play" class="narration-btn narration-play" style="display: none;">▶ Play</button>
+            <button id="narration-pause" class="narration-btn narration-pause">⏸ Pause</button>
+            <button id="narration-stop" class="narration-btn narration-stop">⏹ Stop</button>
+          </div>
+          <div class="narration-status">
+            <span id="narration-status-text">Connecting...</span>
+          </div>
+        </div>
+      `;
+
+      const container = document.createElement('div');
+      container.innerHTML = html;
+      document.body.appendChild(container.firstElementChild);
+
+      this.injectStyles();
+      this.attachListeners();
+      this.uiCreated = true;
+
+      console.log('[NarrationPlayer] UI created');
+    }
+
+    injectStyles() {
+      if (document.getElementById('narration-player-styles')) return;
+
+      const style = document.createElement('style');
+      style.id = 'narration-player-styles';
+      style.textContent = `
+        .narration-player {
+          position: fixed; bottom: 20px; right: 20px; width: 350px;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+          padding: 16px; color: white;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          z-index: 10000; animation: slideIn 0.3s ease-out;
+        }
+        @keyframes slideIn {
+          from { transform: translateY(100px); opacity: 0; }
+          to { transform: translateY(0); opacity: 1; }
+        }
+        .narration-header {
+          display: flex; align-items: center; margin-bottom: 12px;
+          padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.2);
+        }
+        .narration-icon { font-size: 24px; margin-right: 8px; }
+        .narration-title { flex: 1; font-size: 16px; font-weight: 600; }
+        .narration-close {
+          background: none; border: none; color: white; font-size: 24px;
+          cursor: pointer; padding: 0; width: 24px; height: 24px;
+          line-height: 24px; opacity: 0.8;
+        }
+        .narration-close:hover { opacity: 1; }
+        .narration-info { margin-bottom: 12px; }
+        .narration-book { font-size: 14px; font-weight: 500; margin-bottom: 4px; }
+        .narration-progress { font-size: 12px; opacity: 0.9; }
+        .narration-controls { display: flex; gap: 8px; margin-bottom: 12px; }
+        .narration-btn {
+          flex: 1; padding: 10px; border: none; border-radius: 6px;
+          background: rgba(255,255,255,0.2); color: white; font-size: 13px;
+          font-weight: 500; cursor: pointer; transition: all 0.2s;
+        }
+        .narration-btn:hover {
+          background: rgba(255,255,255,0.3); transform: translateY(-1px);
+        }
+        .narration-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .narration-status {
+          font-size: 11px; text-align: center; opacity: 0.8; padding-top: 8px;
+          border-top: 1px solid rgba(255,255,255,0.2);
+        }
+      `;
+      document.head.appendChild(style);
+    }
+
+    attachListeners() {
+      const play = document.getElementById('narration-play');
+      const pause = document.getElementById('narration-pause');
+      const stop = document.getElementById('narration-stop');
+      const close = document.getElementById('narration-close');
+
+      if (play) play.onclick = () => this.handlePlay();
+      if (pause) pause.onclick = () => this.handlePause();
+      if (stop) stop.onclick = () => this.handleStop();
+      if (close) close.onclick = () => this.handleStop();
+    }
+
+    start(narrationId, streamUrl, metadata = {}) {
+      console.log('[NarrationPlayer] Starting:', { narrationId, streamUrl, metadata });
+
+      this.ensureUI();
+      this.narrationId = narrationId;
+      this.streamUrl = streamUrl;
+
+      this.show();
+      this.updateInfo(metadata);
+      this.updateStatus('Loading audio...');
+
+      this.audio = new Audio(streamUrl);
+      this.audio.onplay = () => {
+        this.isPlaying = true;
+        this.updateControls();
+        this.updateStatus('Playing...');
+      };
+      this.audio.onpause = () => {
+        this.isPlaying = false;
+        this.updateControls();
+        this.updateStatus('Paused');
+      };
+      this.audio.onended = () => {
+        console.log('[NarrationPlayer] Complete');
+        this.updateStatus('Chapter complete');
+        this.isPlaying = false;
+        this.updateControls();
+        setTimeout(() => this.hide(), 3000);
+      };
+      this.audio.onerror = (e) => {
+        console.error('[NarrationPlayer] Audio error:', e);
+        this.updateStatus('Playback error');
+        this.isPlaying = false;
+        this.updateControls();
+      };
+      this.audio.onloadeddata = () => {
+        this.updateStatus('Playing...');
+      };
+
+      this.audio.play().catch(err => {
+        console.error('[NarrationPlayer] Play error:', err);
+        this.updateStatus('Error: ' + err.message);
+      });
+    }
+
+    show() {
+      const player = document.getElementById('narration-player');
+      if (player) player.style.display = 'block';
+    }
+
+    hide() {
+      const player = document.getElementById('narration-player');
+      if (player) player.style.display = 'none';
+    }
+
+    updateInfo(metadata) {
+      const bookTitle = document.getElementById('narration-book-title');
+      const progress = document.getElementById('narration-progress');
+      if (bookTitle && metadata.book_id) {
+        bookTitle.textContent = metadata.book_id;
+      }
+      if (progress && metadata.start_page) {
+        progress.textContent = `Starting from page ${metadata.start_page}`;
+      }
+    }
+
+    updateStatus(text) {
+      const status = document.getElementById('narration-status-text');
+      if (status) status.textContent = text;
+    }
+
+    updateControls() {
+      const playBtn = document.getElementById('narration-play');
+      const pauseBtn = document.getElementById('narration-pause');
+      if (this.isPlaying) {
+        if (playBtn) playBtn.style.display = 'none';
+        if (pauseBtn) pauseBtn.style.display = 'inline-block';
+      } else {
+        if (playBtn) playBtn.style.display = 'inline-block';
+        if (pauseBtn) pauseBtn.style.display = 'none';
+      }
+    }
+
+    handlePlay() {
+      if (this.audio && !this.isPlaying) {
+        this.audio.play();
+      }
+    }
+
+    handlePause() {
+      if (this.audio && this.isPlaying) {
+        this.audio.pause();
+      }
+    }
+
+    handleStop() {
+      if (this.audio) {
+        this.audio.pause();
+        this.audio.src = '';
+        this.audio = null;
+      }
+      this.isPlaying = false;
+      this.hide();
+      this.narrationId = null;
+    }
+  }
+
+  // Create global instance
+  window.NarrationPlayer = NarrationPlayer;
+  window.narrationPlayer = new NarrationPlayer();
+
+  console.log('[NarrationPlayer] Module loaded');
+})();
