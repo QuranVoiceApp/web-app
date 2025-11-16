@@ -1,0 +1,640 @@
+/**
+ * Voice UI - ChatGPT Style Interface
+ *
+ * Minimalist voice mode interface with:
+ * - Central breathing element with canvas visualizer
+ * - 4-button control panel
+ * - State-based animations
+ * - Accessibility support
+ */
+
+/* ============================================================================
+   Layout
+   ============================================================================ */
+
+#app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  padding: 0;
+  margin: 0;
+}
+
+/* Stage - Central area with breathing element */
+#stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px 40px;
+  gap: 32px;
+}
+
+/* Breathing element container */
+#breather {
+  position: relative;
+  width: 320px;
+  height: 320px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Canvas for waveform/spectrum */
+#viz-canvas {
+  border-radius: 50%;
+  background: #0f0f0f;
+}
+
+/* Pulse overlay */
+#pulse {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Controls */
+#controls {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+}
+
+/* Panes - Transcript and Logs */
+#panes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  padding: 0 20px 40px;
+  max-width: 1200px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.pane {
+  background: #141414;
+  border: 1px solid #1f1f1f;
+  border-radius: 12px;
+  padding: 20px;
+  min-height: 300px;
+  display: flex;
+  flex-direction: column;
+}
+
+.pane h3 {
+  margin: 0 0 12px 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #ddd;
+}
+
+#transcript {
+  flex: 1;
+  overflow-y: auto;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #ccc;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+#logs {
+  flex: 1;
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #999;
+  font-family: 'Courier New', monospace;
+  white-space: pre;
+  margin: 0;
+  padding: 0;
+}
+
+/* ============================================================================
+   Buttons
+   ============================================================================ */
+
+.btn {
+  background: #1f1f1f;
+  color: #eee;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: inherit;
+}
+
+.btn:hover {
+  background: #2a2a2a;
+  border-color: #3a3a3a;
+}
+
+.btn:active {
+  transform: scale(0.98);
+}
+
+.btn:focus-visible {
+  outline: 2px solid #3fa8ff;
+  outline-offset: 2px;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Large buttons */
+.btn-lg {
+  padding: 14px 28px;
+  font-size: 16px;
+  font-weight: 600;
+  min-width: 140px;
+}
+
+/* Connect button - Green */
+.btn-green {
+  background: linear-gradient(135deg, #27d07a 0%, #22b869 100%);
+  color: #001a0a;
+  border: none;
+}
+
+.btn-green:hover {
+  background: linear-gradient(135deg, #2ee085 0%, #27d07a 100%);
+}
+
+/* Disconnect button - Red */
+.btn-red {
+  background: linear-gradient(135deg, #ff5252 0%, #e04444 100%);
+  color: #fff;
+  border: none;
+}
+
+.btn-red:hover {
+  background: linear-gradient(135deg, #ff6b6b 0%, #ff5252 100%);
+}
+
+/* Muted state */
+.btn-muted {
+  background: #ff9500;
+  color: #1a0f00;
+  border: none;
+}
+
+.btn-muted:hover {
+  background: #ffaa33;
+}
+
+/* ============================================================================
+   Breathing Element States
+   ============================================================================ */
+
+/* Idle - Gray, no animation */
+.state-idle #viz-canvas {
+  border: 2px solid #555555;
+  opacity: 0.5;
+}
+
+/* Listening - Blue pulse */
+.state-listening #viz-canvas {
+  border: 2px solid #3fa8ff;
+}
+
+.state-listening #pulse {
+  animation: pulse-blue 2s ease-in-out infinite;
+}
+
+/* Speaking - Orange wave */
+.state-speaking #viz-canvas {
+  border: 2px solid #ff9500;
+}
+
+.state-speaking #pulse {
+  animation: pulse-orange 1.5s ease-in-out infinite;
+}
+
+/* Searching - Yellow fast pulse */
+.state-searching #viz-canvas {
+  border: 2px solid #ffc107;
+}
+
+.state-searching #pulse {
+  animation: pulse-yellow 0.8s ease-in-out infinite;
+}
+
+/* Pulse animations */
+@keyframes pulse-blue {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(63, 168, 255, 0);
+    opacity: 0;
+  }
+  50% {
+    box-shadow: 0 0 40px 10px rgba(63, 168, 255, 0.6);
+    opacity: 1;
+  }
+}
+
+@keyframes pulse-orange {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(255, 149, 0, 0);
+    opacity: 0;
+  }
+  50% {
+    box-shadow: 0 0 40px 10px rgba(255, 149, 0, 0.6);
+    opacity: 1;
+  }
+}
+
+@keyframes pulse-yellow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(255, 193, 7, 0);
+    opacity: 0;
+  }
+  50% {
+    box-shadow: 0 0 50px 15px rgba(255, 193, 7, 0.8);
+    opacity: 1;
+  }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  #pulse {
+    animation: none !important;
+  }
+
+  .state-listening #viz-canvas {
+    border: 3px solid #3fa8ff;
+  }
+
+  .state-speaking #viz-canvas {
+    border: 3px solid #ff9500;
+  }
+
+  .state-searching #viz-canvas {
+    border: 3px solid #ffc107;
+  }
+}
+
+/* ============================================================================
+   "Now Reading" Panel
+   ============================================================================ */
+
+.now-reading {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  width: 320px;
+  max-width: calc(100vw - 40px);
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+  animation: slide-up 0.3s ease-out;
+}
+
+@keyframes slide-up {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.now-reading-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.now-reading-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #3fa8ff;
+}
+
+.btn-sm {
+  padding: 4px 12px;
+  font-size: 12px;
+  min-width: auto;
+}
+
+.btn-outline {
+  background: transparent;
+  border: 1px solid #3a3a3a;
+  color: #ccc;
+}
+
+.btn-outline:hover {
+  background: #2a2a2a;
+  border-color: #4a4a4a;
+}
+
+.book-info {
+  margin-bottom: 12px;
+}
+
+.book-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 4px;
+  line-height: 1.3;
+}
+
+.book-author {
+  font-size: 13px;
+  color: #999;
+}
+
+.section-header {
+  font-size: 13px;
+  color: #ccc;
+  margin-bottom: 8px;
+  font-style: italic;
+}
+
+.page-progress {
+  font-size: 12px;
+  color: #3fa8ff;
+  font-weight: 500;
+}
+
+.reading-controls {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #2a2a2a;
+}
+
+.continuation-prompt {
+  font-size: 13px;
+  color: #ddd;
+  margin: 0 0 10px 0;
+}
+
+.btn-group {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-group button {
+  flex: 1;
+  font-size: 13px;
+  padding: 8px 12px;
+}
+
+.btn-primary {
+  background: #3fa8ff;
+  color: #fff;
+  border: none;
+}
+
+.btn-primary:hover {
+  background: #5ab8ff;
+}
+
+.btn-secondary {
+  background: #2a2a2a;
+  color: #ccc;
+  border: 1px solid #3a3a3a;
+}
+
+.btn-secondary:hover {
+  background: #3a3a3a;
+}
+
+/* ============================================================================
+   Settings Panel (keep existing, just adjust position)
+   ============================================================================ */
+
+#settingsGear {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  background: transparent;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  z-index: 9999;
+  padding: 8px;
+  line-height: 1;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+
+#settingsGear:hover {
+  opacity: 1;
+}
+
+#settingsPanel {
+  position: fixed;
+  top: 52px;
+  right: 12px;
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  color: #eee;
+  padding: 16px;
+  border-radius: 12px;
+  display: none;
+  z-index: 9998;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  min-width: 220px;
+}
+
+#settingsPanel label {
+  display: block;
+  margin-bottom: 10px;
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+
+#settingsPanel input[type="checkbox"] {
+  margin-right: 8px;
+  cursor: pointer;
+}
+
+#settingsPanel hr {
+  border: none;
+  border-top: 1px solid #2a2a2a;
+  margin: 12px 0;
+}
+
+#settingsPanel .settings-group {
+  margin-bottom: 12px;
+}
+
+#settingsPanel .settings-group:last-child {
+  margin-bottom: 0;
+}
+
+#settingsPanel .settings-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: #777;
+  margin-bottom: 8px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+/* ============================================================================
+   Responsive Design
+   ============================================================================ */
+
+@media (max-width: 640px) {
+  #stage {
+    padding: 40px 15px 30px;
+    gap: 24px;
+  }
+
+  #breather {
+    width: 240px;
+    height: 240px;
+  }
+
+  #viz-canvas {
+    width: 240px !important;
+    height: 240px !important;
+  }
+
+  #controls {
+    flex-direction: column;
+    width: 100%;
+    max-width: 280px;
+  }
+
+  #controls .btn {
+    width: 100%;
+  }
+
+  #panes {
+    grid-template-columns: 1fr;
+    padding: 0 15px 30px;
+    gap: 15px;
+  }
+
+  .now-reading {
+    bottom: 10px;
+    right: 10px;
+    left: 10px;
+    width: auto;
+  }
+}
+
+@media (max-width: 1024px) and (min-width: 641px) {
+  #panes {
+    max-width: 900px;
+  }
+}
+
+/* ============================================================================
+   Accessibility
+   ============================================================================ */
+
+/* Screen reader only */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Focus indicators */
+button:focus-visible,
+select:focus-visible,
+input:focus-visible {
+  outline: 2px solid #3fa8ff;
+  outline-offset: 2px;
+}
+
+/* High contrast support */
+@media (prefers-contrast: high) {
+  .btn {
+    border-width: 2px;
+  }
+
+  .pane {
+    border-width: 2px;
+  }
+
+  .now-reading {
+    border-width: 2px;
+  }
+}
+
+/* ============================================================================
+   Loading States
+   ============================================================================ */
+
+.loading {
+  opacity: 0.6;
+  pointer-events: none;
+  cursor: wait;
+}
+
+.loading::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: inherit;
+}
+
+/* ============================================================================
+   Transcript Formatting
+   ============================================================================ */
+
+.transcript-user {
+  color: #3fa8ff;
+  font-weight: 500;
+}
+
+.transcript-assistant {
+  color: #ddd;
+}
+
+.transcript-searching {
+  color: #ffc107;
+  font-style: italic;
+}
+
+.transcript-error {
+  color: #ff5252;
+}
+
+/* ============================================================================
+   Logs Formatting
+   ============================================================================ */
+
+.log-info {
+  color: #3fa8ff;
+}
+
+.log-success {
+  color: #27d07a;
+}
+
+.log-warning {
+  color: #ffc107;
+}
+
+.log-error {
+  color: #ff5252;
+}

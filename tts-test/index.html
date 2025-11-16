@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TTS Voice Comparison - AMAL Voice Tutor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+
+        h1 {
+            text-align: center;
+            color: #2d3748;
+            margin-bottom: 10px;
+            font-size: 2.2em;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #718096;
+            margin-bottom: 40px;
+            font-size: 1.1em;
+        }
+
+        .comparison-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 25px;
+            margin-bottom: 40px;
+        }
+
+        .player-card {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            border: 2px solid transparent;
+        }
+
+        .player-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.15);
+            border-color: #667eea;
+        }
+
+        .player-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .provider-icon {
+            width: 45px;
+            height: 45px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 22px;
+            margin-right: 12px;
+        }
+
+        .openai-icon {
+            background: linear-gradient(135deg, #10a37f 0%, #1a7f64 100%);
+        }
+
+        .elevenlabs-icon {
+            background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
+        }
+
+        .elevenlabs-icon-female {
+            background: linear-gradient(135deg, #ec4899 0%, #be185d 100%);
+        }
+
+        .elevenlabs-icon-male {
+            background: linear-gradient(135deg, #3b82f6 0%, #1e40af 100%);
+        }
+
+        .provider-name {
+            font-size: 1.3em;
+            font-weight: 600;
+            color: #2d3748;
+        }
+
+        .provider-model {
+            color: #718096;
+            font-size: 0.85em;
+            margin-top: 3px;
+        }
+
+        audio {
+            width: 100%;
+            margin: 15px 0;
+            border-radius: 8px;
+        }
+
+        .specs {
+            background: #f7fafc;
+            border-radius: 10px;
+            padding: 12px;
+            margin-top: 12px;
+        }
+
+        .spec-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 0;
+            border-bottom: 1px solid #e2e8f0;
+            font-size: 0.9em;
+        }
+
+        .spec-item:last-child {
+            border-bottom: none;
+        }
+
+        .spec-label {
+            color: #718096;
+            font-weight: 500;
+        }
+
+        .spec-value {
+            color: #2d3748;
+            font-weight: 600;
+        }
+
+        .test-text {
+            background: #f7fafc;
+            border-left: 4px solid #667eea;
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+
+        .test-text h3 {
+            color: #2d3748;
+            margin-bottom: 10px;
+            font-size: 1.2em;
+        }
+
+        .test-text p {
+            color: #4a5568;
+            line-height: 1.8;
+            margin-bottom: 10px;
+        }
+
+        .evaluation-criteria {
+            margin-top: 30px;
+            background: #fef5e7;
+            border-radius: 10px;
+            padding: 20px;
+        }
+
+        .evaluation-criteria h3 {
+            color: #d97706;
+            margin-bottom: 15px;
+        }
+
+        .evaluation-criteria ul {
+            list-style: none;
+            padding-left: 0;
+        }
+
+        .evaluation-criteria li {
+            color: #92400e;
+            padding: 8px 0;
+            padding-left: 25px;
+            position: relative;
+        }
+
+        .evaluation-criteria li:before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            color: #d97706;
+            font-weight: bold;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 5px;
+            font-size: 0.75em;
+            font-weight: 600;
+            margin-top: 5px;
+        }
+
+        .badge-current {
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .badge-recommended {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>TTS Voice Comparison</h1>
+        <p class="subtitle">Compare voice quality and Arabic pronunciation across providers and voices</p>
+
+        <div class="comparison-grid">
+            <!-- OpenAI TTS - Shimmer -->
+            <div class="player-card">
+                <div class="player-header">
+                    <div class="provider-icon openai-icon">🔊</div>
+                    <div>
+                        <div class="provider-name">OpenAI</div>
+                        <div class="provider-model">shimmer voice</div>
+                        <span class="badge badge-current">Current Default</span>
+                    </div>
+                </div>
+
+                <audio controls preload="metadata">
+                    <source src="tts_test_openai_shimmer.mp3" type="audio/mpeg">
+                    Your browser does not support the audio element.
+                </audio>
+
+                <div class="specs">
+                    <div class="spec-item">
+                        <span class="spec-label">Model</span>
+                        <span class="spec-value">tts-1-hd</span>
+                    </div>
+                    <div class="spec-item">
+                        <span class="spec-label">Gender</span>
+                        <span class="spec-value">Female</span>
+                    </div>
+                    <div class="spec-item">
+                        <span class="spec-label">Size</span>
+                        <span class="spec-value">399 KB</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ElevenLabs - Roger/Amal (Current) -->
+            <div class="player-card">
+                <div class="player-header">
+                    <div class="provider-icon elevenlabs-icon">🎙️</div>
+                    <div>
+                        <div class="provider-name">ElevenLabs</div>
+                        <div class="provider-model">Roger (Amal)</div>
+                        <span class="badge badge-current">Testing</span>
+                    </div>
+                </div>
+
+                <audio controls preload="metadata">
+                    <source src="tts_test_elevenlabs.mp3" type="audio/mpeg">
+                    Your browser does not support the audio element.
+                </audio>
+
+                <div class="specs">
+                    <div class="spec-item">
+                        <span class="spec-label">Model</span>
+                        <span class="spec-value">multilingual_v2</span>
+                    </div>
+                    <div class="spec-item">
+                        <span class="spec-label">Gender</span>
+                        <span class="spec-value">Male, Classy</span>
+                    </div>
+                    <div class="spec-item">
+                        <span class="spec-label">Size</span>
+                        <span class="spec-value">352 KB</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ElevenLabs - Sarah -->
+            <div class="player-card">
+                <div class="player-header">
+                    <div class="provider-icon elevenlabs-icon-female">👩</div>
+                    <div>
+                        <div class="provider-name">ElevenLabs</div>
+                        <div class="provider-model">Sarah</div>
+                        <span class="badge badge-recommended">Recommended</span>
+                    </div>
+                </div>
+
+                <audio controls preload="metadata">
+                    <source src="tts_test_elevenlabs_sarah.mp3" type="audio/mpeg">
+                    Your browser does not support the audio element.
+                </audio>
+
+                <div class="specs">
+                    <div class="spec-item">
+                        <span class="spec-label">Model</span>
+                        <span class="spec-value">multilingual_v2</span>
+                    </div>
+                    <div class="spec-item">
+                        <span class="spec-label">Gender</span>
+                        <span class="spec-value">Female, Professional</span>
+                    </div>
+                    <div class="spec-item">
+                        <span class="spec-label">Size</span>
+                        <span class="spec-value">359 KB</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ElevenLabs - Bill -->
+            <div class="player-card">
+                <div class="player-header">
+                    <div class="provider-icon elevenlabs-icon-male">👨</div>
+                    <div>
+                        <div class="provider-name">ElevenLabs</div>
+                        <div class="provider-model">Bill</div>
+                        <span class="badge badge-recommended">Recommended</span>
+                    </div>
+                </div>
+
+                <audio controls preload="metadata">
+                    <source src="tts_test_elevenlabs_bill.mp3" type="audio/mpeg">
+                    Your browser does not support the audio element.
+                </audio>
+
+                <div class="specs">
+                    <div class="spec-item">
+                        <span class="spec-label">Model</span>
+                        <span class="spec-value">multilingual_v2</span>
+                    </div>
+                    <div class="spec-item">
+                        <span class="spec-label">Gender</span>
+                        <span class="spec-value">Male, Comforting</span>
+                    </div>
+                    <div class="spec-item">
+                        <span class="spec-label">Size</span>
+                        <span class="spec-value">407 KB</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="test-text">
+            <h3>Test Text (Same for All Voices)</h3>
+            <p>In the name of Allah, the Most Gracious, the Most Merciful.</p>
+            <p>The concept of <strong>Taqwa</strong> is central to Islamic teachings.</p>
+            <p>The Prophet Muhammad, peace be upon him, emphasized the importance of <strong>Sabr</strong>.</p>
+            <p>Surah Al-Fatiha is recited in every prayer, known as <strong>Salah</strong>.</p>
+            <p>The scholars like <strong>Ibn Kathir</strong> and <strong>Al-Ghazali</strong> provided deep insights into <strong>Tafsir</strong>.</p>
+        </div>
+
+        <div class="evaluation-criteria">
+            <h3>Evaluation Criteria</h3>
+            <ul>
+                <li>Voice quality and naturalness for narration</li>
+                <li>Arabic term pronunciation: Taqwa, Sabr, Salah, Tafsir</li>
+                <li>Islamic names: Muhammad, Ibn Kathir, Al-Ghazali</li>
+                <li>Overall consistency and clarity</li>
+                <li>Suitability for educational/religious content</li>
+                <li>Professional tone appropriate for AMAL</li>
+            </ul>
+        </div>
+    </div>
+</body>
+</html>

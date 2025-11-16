@@ -26,32 +26,11 @@
   let attached = false;
   const runOnce = (versionToken) => {
     if (attached) return;
-
-    // Wait for DOM to be ready first
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', () => runOnce(versionToken), { once: true });
-      return;
-    }
-
     attached = true;
-
-    // Check if new UI is active (check for unique new UI elements)
-    const hasNewUI = !!document.getElementById('viz-canvas') && !!document.getElementById('breather');
-    console.log('[bootstrap] UI detection: hasNewUI=' + hasNewUI);
-
     const loadNext = (idx) => {
       if (idx >= scriptsInOrder.length) return;
-
-      // Skip voice.js if new UI is detected (UIController handles Protocol v3)
-      const scriptPath = scriptsInOrder[idx];
-      if (hasNewUI && scriptPath.includes('voice.js')) {
-        console.log('[bootstrap] Skipping voice.js (new UI detected)');
-        loadNext(idx + 1);
-        return;
-      }
-
       const tag = document.createElement('script');
-      tag.src = scriptPath + '?v=' + encodeURIComponent(versionToken);
+      tag.src = scriptsInOrder[idx] + '?v=' + encodeURIComponent(versionToken);
       tag.async = false;
       tag.defer = false;
       tag.onload = () => loadNext(idx + 1);

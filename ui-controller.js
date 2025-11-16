@@ -1,0 +1,433 @@
+/**
+ * UI Controller
+ *
+ * Main controller that coordinates all UI components:
+ * - Connect/Disconnect button
+ * - Mute/Unmute button
+ * - Copy/Clear Logs buttons
+ * - Visualizer state management
+ * - Audio feedback (beeps/chimes)
+ * - Now Reading panel
+ * - Keyboard shortcuts
+ * - Protocol v3 integration
+ */
+
+class UIController {
+  constructor() {
+    this.protocol = null;
+    this.connected = false;
+    this.muted = false;
+    this.logs = [];
+
+    // Initialize components
+    this.visualizer = new VoiceVisualizer('viz-canvas');
+    this.audioFeedback = new AudioFeedback();
+    this.nowReadingPanel = new NowReadingPanel(this);
+    this.keyboardShortcuts = new KeyboardShortcuts(this);
+
+    // Bind button events
+    this.bindButtons();
+
+    // Initialize Protocol v3
+    this.initProtocol();
+
+    console.log('[UIController] Initialized');
+  }
+
+  /**
+   * Initialize Protocol v3 client
+   */
+  async initProtocol() {
+    try {
+      // Check if Protocol v3 is available
+      if (typeof ProtocolV3 === 'undefined') {
+        console.warn('[UIController] ProtocolV3 not loaded, waiting...');
+
+        // Wait for protocol to load
+        await this.waitForProtocol();
+      }
+
+      // Create Protocol v3 instance
+      this.protocol = new ProtocolV3({
+        tokenUrl: '/realtime/v3/session',
+        model: 'gpt-4o-realtime-preview-2024-12-17',
+        voice: 'echo'
+      });
+
+      // Set up event handlers
+      this.protocol.onConnectionState = (state) => {
+        this.handleConnectionState(state);
+      };
+
+      this.protocol.onEvent = (event) => {
+        this.handleProtocolEvent(event);
+      };
+
+      this.protocol.onAudio = (stream) => {
+        this.handleAudioStream(stream);
+      };
+
+      this.protocol.onError = (error) => {
+        this.addLog(`❌ Protocol error: ${error.message}`, 'error');
+      };
+
+      console.log('[UIController] Protocol v3 initialized');
+    } catch (error) {
+      console.error('[UIController] Failed to initialize protocol:', error);
+      this.addLog(`❌ Failed to initialize protocol: ${error.message}`, 'error');
+    }
+  }
+
+  /**
+   * Wait for Protocol v3 to load
+   */
+  waitForProtocol() {
+    return new Promise((resolve, reject) => {
+      let attempts = 0;
+      const maxAttempts = 50;
+
+      const check = () => {
+        if (typeof ProtocolV3 !== 'undefined') {
+          resolve();
+        } else if (attempts++ < maxAttempts) {
+          setTimeout(check, 100);
+        } else {
+          reject(new Error('Protocol v3 failed to load'));
+        }
+      };
+
+      check();
+    });
+  }
+
+  /**
+   * Bind button event listeners
+   */
+  bindButtons() {
+    // Connect/Disconnect button
+    const btnConnect = document.getElementById('btnConnect');
+    if (btnConnect) {
+      btnConnect.addEventListener('click', () => {
+        if (this.connected) {
+          this.disconnect();
+        } else {
+          this.connect();
+        }
+      });
+    }
+
+    // Mute/Unmute button
+    const btnMute = document.getElementById('btnMute');
+    if (btnMute) {
+      btnMute.addEventListener('click', () => {
+        this.toggleMute();
+      });
+    }
+
+    // Copy Logs button
+    const btnCopyLogs = document.getElementById('btnCopyLogs');
+    if (btnCopyLogs) {
+      btnCopyLogs.addEventListener('click', () => {
+        this.copyLogs();
+      });
+    }
+
+    // Clear Logs button
+    const btnClearLogs = document.getElementById('btnClearLogs');
+    if (btnClearLogs) {
+      btnClearLogs.addEventListener('click', () => {
+        this.clearLogs();
+      });
+    }
+
+    console.log('[UIController] Buttons bound');
+  }
+
+  /**
+   * Connect to voice mode
+   */
+  async connect() {
+    if (!this.protocol) {
+      this.addLog('❌ Protocol not initialized', 'error');
+      return;
+    }
+
+    try {
+      this.addLog('🔌 Connecting to voice mode...', 'info');
+
+      await this.protocol.connect();
+
+      this.connected = true;
+
+      // Update Connect button
+      const btn = document.getElementById('btnConnect');
+      if (btn) {
+        btn.textContent = 'Disconnect';
+        btn.className = 'btn btn-lg btn-red';
+        btn.setAttribute('aria-pressed', 'true');
+      }
+
+      // Update visualizer state
+      this.visualizer.setState('listening');
+
+      this.addLog('✅ Connected successfully', 'success');
+    } catch (error) {
+      this.addLog(`❌ Connection failed: ${error.message}`, 'error');
+      console.error('[UIController] Connect error:', error);
+    }
+  }
+
+  /**
+   * Disconnect from voice mode
+   */
+  async disconnect() {
+    if (!this.protocol) return;
+
+    try {
+      this.addLog('🔌 Disconnecting...', 'info');
+
+      await this.protocol.disconnect();
+
+      this.connected = false;
+
+      // Update Connect button
+      const btn = document.getElementById('btnConnect');
+      if (btn) {
+        btn.textContent = 'Connect';
+        btn.className = 'btn btn-lg btn-green';
+        btn.setAttribute('aria-pressed', 'false');
+      }
+
+      // Update visualizer state
+      this.visualizer.setState('idle');
+
+      // Hide Now Reading panel if visible
+      this.nowReadingPanel.hide();
+
+      this.addLog('✅ Disconnected', 'success');
+    } catch (error) {
+      this.addLog(`❌ Disconnect error: ${error.message}`, 'error');
+      console.error('[UIController] Disconnect error:', error);
+    }
+  }
+
+  /**
+   * Toggle mute/unmute
+   */
+  toggleMute() {
+    this.muted = !this.muted;
+
+    // Update Protocol v3 client
+    if (this.protocol) {
+      if (this.muted) {
+        this.protocol.stopMicrophone();
+      } else {
+        this.protocol.startMicrophone();
+      }
+    }
+
+    // Update Mute button
+    const btn = document.getElementById('btnMute');
+    if (btn) {
+      btn.textContent = this.muted ? 'Unmute' : 'Mute';
+      btn.setAttribute('aria-pressed', this.muted ? 'true' : 'false');
+
+      if (this.muted) {
+        btn.classList.add('btn-muted');
+      } else {
+        btn.classList.remove('btn-muted');
+      }
+    }
+
+    // Update audio feedback mute state
+    this.audioFeedback.setMuted(this.muted);
+
+    // Update visualizer state
+    this.visualizer.setState(this.muted ? 'idle' : 'listening');
+
+    this.addLog(this.muted ? '🔇 Microphone muted' : '🎤 Microphone active', 'info');
+  }
+
+  /**
+   * Copy logs to clipboard
+   */
+  copyLogs() {
+    const logsText = this.logs.join('\n');
+
+    navigator.clipboard.writeText(logsText).then(() => {
+      this.addLog('📋 Logs copied to clipboard', 'success');
+    }).catch((error) => {
+      this.addLog(`❌ Failed to copy logs: ${error.message}`, 'error');
+    });
+  }
+
+  /**
+   * Clear logs
+   */
+  clearLogs() {
+    this.logs = [];
+
+    const logsEl = document.getElementById('logs');
+    if (logsEl) {
+      logsEl.textContent = '';
+    }
+
+    this.addLog('🧹 Logs cleared', 'info');
+  }
+
+  /**
+   * Add log message
+   * @param {string} message
+   * @param {string} type - info|success|warning|error
+   */
+  addLog(message, type = 'info') {
+    const timestamp = new Date().toLocaleTimeString();
+    const logMessage = `[${timestamp}] ${message}`;
+
+    this.logs.push(logMessage);
+
+    const logsEl = document.getElementById('logs');
+    if (logsEl) {
+      logsEl.textContent += logMessage + '\n';
+      logsEl.scrollTop = logsEl.scrollHeight;
+    }
+
+    console.log('[UIController]', message);
+  }
+
+  /**
+   * Handle connection state changes
+   * @param {string} state
+   */
+  handleConnectionState(state) {
+    console.log('[UIController] Connection state:', state);
+
+    if (state === 'connected') {
+      this.visualizer.setState('listening');
+    } else if (state === 'disconnected') {
+      this.visualizer.setState('idle');
+    }
+  }
+
+  /**
+   * Handle Protocol v3 events
+   * @param {Object} event
+   */
+  handleProtocolEvent(event) {
+    // KB tool call started
+    if (event.type === 'ui.kb_busy' && event.status === 'started') {
+      this.audioFeedback.playSearchingBeep();
+      this.visualizer.setState('searching');
+      this.addLog(`🔍 Searching: ${event.tool}`, 'info');
+    }
+
+    // KB tool call completed
+    if (event.type === 'ui.kb_busy' && event.status === 'completed') {
+      this.audioFeedback.playCompletionChime();
+      this.visualizer.setState('listening');
+      this.addLog(`✅ Completed: ${event.tool}`, 'success');
+    }
+
+    // KB reading started
+    if (event.type === 'ui.kb_reading' && event.status === 'started') {
+      this.nowReadingPanel.show({
+        title: event.title,
+        author: event.author,
+        section_header: event.section_header,
+        page_start: event.page_start,
+        page_end: event.page_end,
+        book_id: event.book_id
+      });
+    }
+
+    // Page changed during reading
+    if (event.type === 'ui.kb_reading' && event.status === 'page_changed') {
+      this.nowReadingPanel.updatePage(event.page_number);
+    }
+
+    // Reading completed
+    if (event.type === 'ui.kb_reading' && event.status === 'completed') {
+      this.nowReadingPanel.hide();
+    }
+
+    // Speaking state (TTS audio)
+    if (event.type === 'response.audio.delta') {
+      this.visualizer.setState('speaking');
+    }
+
+    // Speaking done
+    if (event.type === 'response.audio.done') {
+      this.visualizer.setState('listening');
+    }
+
+    // Add transcript messages
+    if (event.type === 'conversation.item.input_audio_transcription.completed') {
+      this.addTranscript('User', event.transcript || '[audio]');
+    }
+
+    if (event.type === 'response.text.delta') {
+      this.addTranscript('Assistant', event.delta, true);
+    }
+  }
+
+  /**
+   * Handle audio stream from Protocol v3
+   * @param {MediaStream} stream
+   */
+  handleAudioStream(stream) {
+    console.log('[UIController] Audio stream received');
+
+    // Connect visualizer to audio stream
+    if (this.visualizer && stream.getAudioTracks().length > 0) {
+      try {
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioContext.createMediaStreamSource(stream);
+        this.visualizer.connect(audioContext, source);
+      } catch (error) {
+        console.error('[UIController] Failed to connect visualizer:', error);
+      }
+    }
+
+    // Set audio element source for playback
+    const audioEl = document.getElementById('qvtOut');
+    if (audioEl) {
+      audioEl.srcObject = stream;
+      audioEl.muted = false; // Unmute for playback
+    }
+  }
+
+  /**
+   * Add transcript message
+   * @param {string} speaker - User|Assistant
+   * @param {string} text
+   * @param {boolean} append - Append to last message
+   */
+  addTranscript(speaker, text, append = false) {
+    const transcriptEl = document.getElementById('transcript');
+    if (!transcriptEl) return;
+
+    if (append) {
+      // Append to last message
+      const lines = transcriptEl.textContent.split('\n');
+      if (lines.length > 0 && lines[lines.length - 1].startsWith(speaker + ':')) {
+        lines[lines.length - 1] += text;
+        transcriptEl.textContent = lines.join('\n');
+      } else {
+        transcriptEl.textContent += `${speaker}: ${text}`;
+      }
+    } else {
+      // New message
+      transcriptEl.textContent += `${speaker}: ${text}\n`;
+    }
+
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  }
+}
+
+// Initialize UI Controller when DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+  console.log('[UIController] DOM ready, initializing...');
+  window.uiController = new UIController();
+});
+
+console.log('[UIController] Module loaded');

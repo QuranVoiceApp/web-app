@@ -1044,7 +1044,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
           const p3 = new window.ProtocolV3({
             tokenUrl: tokenUrl,
             model: 'gpt-4o-realtime-preview-2024-12-17',
-            voice: 'echo',
+            voice: 'alloy',
             // instructions: null allows backend to use default AMAL persona
             instructions: null
           });
@@ -1074,12 +1074,6 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
             const eventType = event.type;
             logAudio(`[ProtocolV3] OpenAI event: ${eventType}`);
 
-            // DEBUG: Log ALL function-related events
-            if (eventType && eventType.includes("function")) {
-              log("[Narration] DEBUG function event:", eventType);
-              log("[Narration] DEBUG event data:", JSON.stringify(event, null, 2));
-            }
-
             // Update transcript display
             if (eventType === 'conversation.item.input_audio_transcription.completed') {
               const transcript = event.transcript || '';
@@ -1093,54 +1087,6 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
               log(`[ProtocolV3] Assistant said: "${transcript}"`);
               appendTranscript('\n', true);
             }
-
-            // ═══════════════════════════════════════════════════════════
-            // SERVER-SIDE NARRATION DETECTION
-            // ═══════════════════════════════════════════════════════════
-            // Detect kb_start_narration function call output
-            if (eventType === "response.function_call_arguments.done") {
-              try {
-                if (event.name === "kb_start_narration" && event.arguments) {
-                  log("[Narration] Detected kb_start_narration call");
-                  const args = JSON.parse(event.arguments);
-                  log("[Narration] Arguments:", JSON.stringify(args));
-                }
-              } catch (e) {
-                logError("[Narration] Error parsing function args:", e);
-              }
-            }
-
-            // Detect function call output (result from server)
-            if (eventType === "response.output_item.done" && event.item) {
-              try {
-                const item = event.item;
-                if (item.type === "function_call" && item.name === "kb_start_narration") {
-                  log("[Narration] Function call completed, waiting for result...");
-                }
-                if (item.type === "function_call_output" && item.call_id) {
-                  // Check if this is a response to kb_start_narration
-                  const output = item.output ? JSON.parse(item.output) : null;
-                  if (output && output.narration_id && output.stream_url_full) {
-                    log("[Narration] Starting narration player:", output.narration_id);
-                    if (window.narrationPlayer) {
-                      window.narrationPlayer.start(
-                        output.narration_id,
-                        output.stream_url_full,
-                        {
-                          book_id: output.book_id,
-                          start_page: output.start_page
-                        }
-                      );
-                    } else {
-                      logError("[Narration] narrationPlayer not available");
-                    }
-                  }
-                }
-              } catch (e) {
-                logError("[Narration] Error handling function output:", e);
-              }
-            }
-            // ═══════════════════════════════════════════════════════════
           };
 
           p3.onError = (error) => {

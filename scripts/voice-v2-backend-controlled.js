@@ -70,18 +70,8 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
   // URL params early so we can honor ws override
   const urlParams = new URLSearchParams(location.search);
   const wsOverride = urlParams.get('ws') || urlParams.get('ws_url');
-  // Check for Protocol v3 setting (WebRTC) - requires explicit opt-in via settings
-  const useProtocolV3 = window.ASIMO_SETTINGS?.useProtocolV3 || urlParams.get('protocol') === 'v3';
-  // Protocol v2 is production-ready with full OpenAI integration (default unless v3 enabled)
-  const useProtocolV2 = !useProtocolV3;
-  const wsUrl = useProtocolV2
-    ? (wsOverride || ((window.Env && window.Env.WS_URL_V2) || 'wss://quran.asimo.io/realtime/v2'))
-    : (wsOverride || ((window.Env && window.Env.WS_URL) || 'wss://quran.asimo.io/realtime/v1/ws'));
-  // Debug logging for protocol selection
-  log(`[Protocol] Selection: v3=${useProtocolV3}, localStorage='${localStorage.getItem('useProtocolV3')}', ASIMO=${window.ASIMO_SETTINGS?.useProtocolV3}`);
-  if (useProtocolV3) log('🚀 Protocol v3 (WebRTC) enabled');
-  else if (useProtocolV2) log('🚀 Protocol v2 enabled');
-  try { const elWs = $('wsUrl'); if (elWs) elWs.textContent = useProtocolV3 ? 'WebRTC (v3)' : wsUrl; } catch {}
+  const wsUrl = wsOverride || ((window.Env && window.Env.WS_URL) || 'wss://quran.asimo.io/realtime/v1/ws');
+  try { const elWs = $('wsUrl'); if (elWs) elWs.textContent = wsUrl; } catch {}
   const ffTokens = (urlParams.get('ff') || '').split(',').filter(Boolean);
   const FF = (() => {
     const set = new Set(ffTokens);
@@ -116,10 +106,10 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
   try { window.__qvtFlagTokens = ffTokens.slice(); } catch {}
   const activeFlags = ffTokens.join(',') || 'none';
   const sendParam = (urlParams.get('send') || '').toLowerCase();
-  // Use binary WebSocket mode (JSON path has message delivery issues)
-  const wantsSeqJson = false;
-  const wantsBinary = true;
-  let resolvedSendPath = 'binary';
+  // Force json+seq transport for stability across Chrome/iOS
+  const wantsSeqJson = true;
+  const wantsBinary = false;
+  let resolvedSendPath = 'json+seq';
   let sendMode = resolvedSendPath;
 
   try {
@@ -331,15 +321,17 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
       else setTimeout(bindLater, 0);
     } catch {}
   };
-  // Strict commit gating counters – do not commit unless ≥7 frames (140ms) and ≥6720 bytes to prevent OpenAI buffer too small errors
+  // Strict commit gating counters – do not commit unless ≥6 frames (≈120ms) and ≥5760 bytes
   let framesSinceCommit = 0;
   let msSinceLastCommit = 0;
   let bytesSinceCommit = 0;
-  const MIN_COMMIT_MS = 140;  // Increased to ensure backend gate passes (120ms) + safety margin
-  const MIN_COMMIT_FRAMES = 7;  // 7 frames × 20ms = 140ms
-  const MIN_COMMIT_BYTES = 6720; // 140ms @ 24kHz PCM16 = 6720 bytes
+  const MIN_COMMIT_MS = 120;
+  const MIN_COMMIT_FRAMES = 6;
+  const MIN_COMMIT_BYTES = 5760; // 24kHz PCM16 → 48 bytes/ms
   let commitRequiredBytes = 0; // raised temporarily when server defers
   const IDLE_COMMIT_MS = 1200;
+  // Backend-controlled commit protocol: when true, only commit on backend signals
+  const USE_BACKEND_CONTROLLED_COMMITS = false;
   const scheduleIdleCommit = (reason = 'timer') => {
     if (state.idleCommitTimer) {
       clearTimeout(state.idleCommitTimer);
@@ -347,10 +339,9 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
     }
     state.idleCommitTimer = setTimeout(() => {
       state.idleCommitTimer = null;
-      // Only use v1 commit logic if NOT using Protocol v2
-      if (!state.useProtocolV2 && state.ws && state.ws.readyState === 1) {
+      if (state.ws && state.ws.readyState === 1) {
         const need = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
-        if (!state.responseActive && bytesSinceCommit >= need && (metrics.sentAppends||0) > 0) {
+        if (!USE_BACKEND_CONTROLLED_COMMITS && !state.responseActive && bytesSinceCommit >= need && (metrics.sentAppends||0) > 0) {
           const hadBytes = bytesSinceCommit;
           if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${hadBytes} need=${need}`);
         }
@@ -376,13 +367,12 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
           const framesOk = framesSinceCommit >= MIN_COMMIT_FRAMES;
           const need = Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0);
           const bytesOk = bytesSinceCommit >= need;
-          // Only use v1 commit logic if NOT using Protocol v2
-          if (!state.useProtocolV2 && ageOk && framesOk && bytesOk && (metrics.sentAppends||0) > 0) {
+          if (!USE_BACKEND_CONTROLLED_COMMITS && ageOk && framesOk && bytesOk && (metrics.sentAppends||0) > 0) {
             const hadBytes = bytesSinceCommit;
             if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${hadBytes} need=${need}`);
-          } else if (!state.useProtocolV2 && !framesOk) {
+          } else if (!USE_BACKEND_CONTROLLED_COMMITS && !framesOk) {
             try { log(`commit.skipped frames=${framesSinceCommit} ms=${msSinceLastCommit}`); } catch {}
-          } else if (!state.useProtocolV2 && !bytesOk) {
+          } else if (!USE_BACKEND_CONTROLLED_COMMITS && !bytesOk) {
             try { log(`commit.skipped bytes=${bytesSinceCommit}`); } catch {}
           }
         } catch {}
@@ -1004,7 +994,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
     if (state.ws) return;
     // Allow connect even if SW controller is active (we unregistered on load)
     try {
-      log('[Connect] Initiating connection...');
+      log('Connecting to', wsUrl);
       if (diag) {
         try {
           log('ua', navigator.userAgent);
@@ -1021,318 +1011,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
           }).catch(()=>{});
         } catch {}
       }
-
-      // Protocol v3 initialization (WebRTC) - check current setting value
-      // Use current setting value, not page-load constant
-      const currentUseV3 = window.ASIMO_SETTINGS?.useProtocolV3 || urlParams.get('protocol') === 'v3';
-      log(`[Protocol] Dynamic check at connect: currentUseV3=${currentUseV3}, window.ProtocolV3=${!!window.ProtocolV3}, window.ProtocolV2=${!!window.ProtocolV2}`);
-
-      let protocolInitialized = false;
-
-      // Protocol v3 WebRTC path
-      if (currentUseV3 && window.ProtocolV3) {
-        try {
-          log('[ProtocolV3] Initializing WebRTC connection...');
-          state.useProtocolV3 = true;
-          state.protocolV3Client = null;
-          state.connected = true;
-          setConn(true);
-
-          // Create Protocol v3 client with backend token URL
-          const tokenUrl = 'https://quran.asimo.io/realtime/v3/session';
-          log('[ProtocolV3] Creating client with tokenUrl:', tokenUrl);
-          const p3 = new window.ProtocolV3({
-            tokenUrl: tokenUrl,
-            model: 'gpt-4o-realtime-preview-2024-12-17',
-            voice: 'echo',
-            // instructions: null allows backend to use default AMAL persona
-            instructions: null
-          });
-
-          // Set up event handlers
-          p3.onReady = () => {
-            log('[ProtocolV3] WebRTC connection ready');
-            state.protocolV3Ready = true;
-          };
-
-          p3.onAudio = (stream) => {
-            // Handle remote audio stream from OpenAI
-            try {
-              log('[ProtocolV3] Received remote audio stream');
-              const outEl = state.outEl || document.getElementById('qvtOut');
-              if (outEl) {
-                outEl.srcObject = stream;
-                outEl.muted = false;  // Unmute to allow audio playback
-                outEl.play().catch(err => logError('[ProtocolV3] Audio play error:', err));
-              }
-            } catch (err) {
-              logError('[ProtocolV3] Stream handling error:', err);
-            }
-          };
-
-          p3.onEvent = (event) => {
-            const eventType = event.type;
-            logAudio(`[ProtocolV3] OpenAI event: ${eventType}`);
-
-            // DEBUG: Log ALL function-related events
-            if (eventType && eventType.includes("function")) {
-              log("[Narration] DEBUG function event:", eventType);
-              log("[Narration] DEBUG event data:", JSON.stringify(event, null, 2));
-            }
-
-            // Update transcript display
-            if (eventType === 'conversation.item.input_audio_transcription.completed') {
-              const transcript = event.transcript || '';
-              log(`[ProtocolV3] User said: "${transcript}"`);
-              appendTranscript(`You: ${transcript}\n`, true);
-            } else if (eventType === 'response.audio_transcript.delta') {
-              const delta = event.delta || '';
-              appendTranscript(delta, false);
-            } else if (eventType === 'response.audio_transcript.done') {
-              const transcript = event.transcript || '';
-              log(`[ProtocolV3] Assistant said: "${transcript}"`);
-              appendTranscript('\n', true);
-            }
-
-            // ═══════════════════════════════════════════════════════════
-            // SERVER-SIDE NARRATION DETECTION
-            // ═══════════════════════════════════════════════════════════
-            // Detect kb_start_narration function call output
-            if (eventType === "response.function_call_arguments.done") {
-              try {
-                if (event.name === "kb_start_narration" && event.arguments) {
-                  log("[Narration] Detected kb_start_narration call");
-                  const args = JSON.parse(event.arguments);
-                  log("[Narration] Arguments:", JSON.stringify(args));
-                }
-              } catch (e) {
-                logError("[Narration] Error parsing function args:", e);
-              }
-            }
-
-            // Detect function call output (result from server)
-            if (eventType === "response.output_item.done" && event.item) {
-              try {
-                const item = event.item;
-                if (item.type === "function_call" && item.name === "kb_start_narration") {
-                  log("[Narration] Function call completed, waiting for result...");
-                }
-                if (item.type === "function_call_output" && item.call_id) {
-                  // Check if this is a response to kb_start_narration
-                  const output = item.output ? JSON.parse(item.output) : null;
-                  if (output && output.narration_id && output.stream_url_full) {
-                    log("[Narration] Starting narration player:", output.narration_id);
-                    if (window.narrationPlayer) {
-                      window.narrationPlayer.start(
-                        output.narration_id,
-                        output.stream_url_full,
-                        {
-                          book_id: output.book_id,
-                          start_page: output.start_page
-                        }
-                      );
-                    } else {
-                      logError("[Narration] narrationPlayer not available");
-                    }
-                  }
-                }
-              } catch (e) {
-                logError("[Narration] Error handling function output:", e);
-              }
-            }
-            // ═══════════════════════════════════════════════════════════
-          };
-
-          p3.onError = (error) => {
-            logError('[ProtocolV3]', error);
-          };
-
-          p3.onDisconnect = () => {
-            log('[ProtocolV3] Disconnected');
-            disconnect();
-          };
-
-          p3.onConnectionState = (state) => {
-            log('[ProtocolV3] Connection state:', state);
-          };
-
-          // Connect Protocol v3 client
-          await p3.connect();
-          log('[ProtocolV3] Connected successfully');
-          state.protocolV3Client = p3;
-          protocolInitialized = true;
-
-          // Start microphone for v3 (will be handled by WebRTC)
-          // Note: Mic handling in v3 is different - integrated into WebRTC stream
-
-        } catch (e) {
-          log('[ProtocolV3] Init error:', e?.message || e);
-          // Fall back to v2 on error
-          state.useProtocolV3 = false;
-          logError('[ProtocolV3] Falling back to Protocol v2');
-        }
-      } else if (currentUseV3 && !window.ProtocolV3) {
-        log('[Protocol] WARNING: Protocol v3 requested but window.ProtocolV3 is not available. Falling back to Protocol v2.');
-      }
-
-      // Protocol v2 initialization
-      // Use v2 if: (1) v3 not requested, OR (2) v3 requested but failed/unavailable
-      // Skip v1 WebSocket entirely
-      if (!protocolInitialized && window.ProtocolV2) {
-        try {
-          log('[ProtocolV2] Initializing...');
-          // Store v2 flag in state for later checks
-          state.useProtocolV2 = true;
-          state.protocolV2Client = null; // Will be initialized after audio context is ready
-          state.connected = true;
-          setConn(true);
-
-          // Initialize audio context for Protocol v2
-          if (!state.playCtx) {
-            state.playCtx = new (window.AudioContext || window.webkitAudioContext)();
-            state.playCursor = state.playCtx.currentTime;
-          }
-          if (!state.sinkDest) {
-            state.sinkDest = new MediaStreamAudioDestinationNode(state.playCtx);
-          }
-          const outEl = state.outEl || document.getElementById('qvtOut');
-          if (outEl && outEl.srcObject !== state.sinkDest.stream) {
-            outEl.srcObject = state.sinkDest.stream;
-          }
-          if (outEl) {
-            outEl.setAttribute('playsinline', '');
-            outEl.autoplay = true;
-            if (!state.audioUnlocked) outEl.muted = true;
-            updateMuteTestid();
-            state.outEl = outEl;
-            state.sinkEl = outEl;
-            try { outEl.play?.(); } catch {}
-          }
-          if (state.audioUnlockPending || (isIOS && !state.audioUnlocked)) {
-            state.audioUnlockPending = true;
-            unlockIOSAudio(state.playCtx);
-          }
-
-          // Create Protocol v2 client with correct v2 URL (not page-load wsUrl)
-          const v2Url = 'wss://quran.asimo.io/realtime/v2';
-          log('[ProtocolV2] Creating client with audio context, url:', v2Url);
-          const p2 = new window.ProtocolV2(v2Url, state.playCtx, {
-            sampleRateHz: 24000,
-            minMs: 140,
-            proposeIntervalMs: 100
-          });
-
-          // Set up event handlers
-          p2.onReady = () => {
-            log('[ProtocolV2] Ready to send audio');
-            state.protocolV2Ready = true;
-          };
-
-          p2.onFrameAck = (frameId) => {
-            // Frame acknowledged
-          };
-
-          p2.onCommitAck = (ack) => {
-            if (ack.status === 'accept') {
-              log(`[ProtocolV2] Commit accepted: ${ack.ms}ms`);
-            } else if (ack.status === 'defer') {
-              log(`[ProtocolV2] Commit deferred: need ${ack.min_ms_needed}ms more`);
-            }
-          };
-
-          p2.onAudio = (audioB64) => {
-            // Decode and play audio from OpenAI
-            try {
-              const audioBytes = Uint8Array.from(atob(audioB64), c => c.charCodeAt(0));
-              // PCM16 @ 24kHz from OpenAI
-              const audioBuffer = new Int16Array(audioBytes.buffer);
-
-              // Convert to Float32Array for AudioContext
-              // Clamp to [-1.0, 1.0] to prevent audio distortion from clipping
-              const float32 = new Float32Array(audioBuffer.length);
-              for (let i = 0; i < audioBuffer.length; i++) {
-                float32[i] = Math.max(-1.0, Math.min(1.0, audioBuffer[i] / 32768.0));
-              }
-
-              // Create AudioBuffer and play
-              const buffer = state.playCtx.createBuffer(1, float32.length, 24000);
-              buffer.getChannelData(0).set(float32);
-
-              const source = state.playCtx.createBufferSource();
-              source.buffer = buffer;
-              source.connect(state.sinkDest || state.playCtx.destination);
-
-              // Schedule audio playback
-              const now = state.playCtx.currentTime;
-              // If playCursor is in the past, reset it to now
-              if (!state.playCursor || state.playCursor < now) {
-                state.playCursor = now;
-              }
-
-              source.start(state.playCursor);
-              state.playCursor += buffer.duration;
-
-              logAudio(`[ProtocolV2] Playing audio: ${audioBytes.length} bytes, ${buffer.duration.toFixed(3)}s at ${state.playCursor.toFixed(3)}s`);
-            } catch (err) {
-              logError('[ProtocolV2] Audio playback error:', err);
-            }
-          };
-
-          p2.onEvent = (event) => {
-            // Handle OpenAI events
-            const eventType = event.type;
-            logAudio(`[ProtocolV2] OpenAI event: ${eventType}`);
-
-            // Reset play cursor on new response
-            if (eventType === 'response.created') {
-              state.playCursor = state.playCtx.currentTime;
-              log('[ProtocolV2] New response - reset play cursor');
-            }
-
-            // Update transcript display
-            if (eventType === 'conversation.item.input_audio_transcription.completed') {
-              const transcript = event.transcript || '';
-              log(`[ProtocolV2] User said: "${transcript}"`);
-              appendTranscript(`You: ${transcript}\n`, true);
-            } else if (eventType === 'response.audio_transcript.delta') {
-              const delta = event.delta || '';
-              appendTranscript(delta, false);
-            } else if (eventType === 'response.audio_transcript.done') {
-              const transcript = event.transcript || '';
-              log(`[ProtocolV2] Assistant said: "${transcript}"`);
-              appendTranscript('\n', true);
-            }
-          };
-
-          p2.onError = (error) => {
-            logError('[ProtocolV2]', error);
-          };
-
-          // Store client immediately so audio frames can be sent
-          state.protocolV2Client = p2;
-
-          // Connect Protocol v2 client
-          p2.connect().then(() => {
-            log('[ProtocolV2] Connected');
-          }).catch((err) => {
-            logError('[ProtocolV2] Connect failed', err);
-            state.useProtocolV2 = false;
-            state.protocolV2Client = null;
-          });
-
-          protocolInitialized = true;
-        } catch (e) {
-          log('[ProtocolV2] Init error:', e?.message || e);
-          // Fall back to v1 on error
-          state.useProtocolV2 = false;
-        }
-      }
-
-      // Fallback to v1 WebSocket only if neither v3 nor v2 were initialized
-      if (!protocolInitialized) {
-        log('[Protocol] ERROR: Neither v3 nor v2 could be initialized. No fallback available.');
-        log('[Protocol] Please check that protocol scripts are loaded and try refreshing the page.');
-        const ws = new WebSocket(wsUrl);
+      const ws = new WebSocket(wsUrl);
       ws.binaryType = 'arraybuffer';
 
       ws.onopen = () => {
@@ -1412,7 +1091,6 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
           state.audioUnlockPending = true;
           unlockIOSAudio(state.playCtx);
         }
-
         // Prepare jitter buffer for TTS playback (smooths network jitter)
         try {
           class TtsJitterBuffer {
@@ -1763,7 +1441,6 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
           resetInitialGreeting();
         }
       };
-      } // End of if (!useProtocolV2)
     } catch (e) {
       log('Connect failed', e.message || e);
     }
@@ -2184,8 +1861,8 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
             setTtsGain(1.0);
           }
         }
-        // Optional auto-commit flow on silence — allow >= ~96ms on speech stop, else wait (v1 only)
-        if (!state.useProtocolV2 && t === 'input_audio_buffer.speech_ended' && $('autoCommit')?.checked) {
+        // Optional auto-commit flow on silence — allow >= ~96ms on speech stop, else wait
+        if (t === 'input_audio_buffer.speech_ended' && $('autoCommit')?.checked) {
           try {
             // Allow slightly lower threshold on explicit speech stop (>= ~96ms / 4608B)
             const tol = 4608; // ~96ms @ 24k/pcm16
@@ -2201,15 +1878,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
         }
         break;
       case 'input_audio_buffer.committed':
-        // CRITICAL FIX: Reset counters when OpenAI acknowledges commit
-        // OpenAI clears its buffer after committing, so we must stop sending commits
-        // until new audio accumulates
-        framesSinceCommit = 0;
-        msSinceLastCommit = 0;
-        bytesSinceCommit = 0;
-        state.appendsSinceCommit = 0;
-        commitRequiredBytes = 0;
-        log('✅ commit acknowledged by OpenAI, counters reset');
+        // No-op: counters reset on our own commit helper
         break;
       case 'input_audio_buffer.cleared': {
         // Reset commit gating counters when server clears buffer
@@ -2420,50 +2089,6 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
   }
 
   function sendAudioFrameBuffer(pcmBuf) {
-    // DEBUG: Log every call to see what's happening
-    const debugOnce = !window.__debugLoggedOnce;
-    if (debugOnce) {
-      window.__debugLoggedOnce = true;
-      log(`[DEBUG] sendAudioFrameBuffer called. useProtocolV2=${state.useProtocolV2}, client=${!!state.protocolV2Client}, ready=${state.protocolV2Ready}`);
-    }
-
-    // Use Protocol v2 if available
-    if (state.useProtocolV2) {
-      // Debug which conditions are failing
-      if (!state.protocolV2Client) {
-        log('[ProtocolV2] DEBUG: No client yet');
-        return false;
-      }
-      if (!state.protocolV2Ready) {
-        log('[ProtocolV2] DEBUG: Not ready yet');
-        return false;
-      }
-
-      try {
-        const base64Audio = arrayBufferToBase64(pcmBuf);
-        const timestamp = Date.now();
-        state.protocolV2Client.sendFrame(base64Audio, timestamp);
-
-        // Track metrics (Protocol v2 handles commits internally)
-        framesSinceCommit += 1;
-        msSinceLastCommit += 20;
-        state.appendsSinceCommit = (state.appendsSinceCommit || 0) + 1;
-        try { bytesSinceCommit += pcmBuf.byteLength || 0; } catch { bytesSinceCommit = 0; }
-
-        // Log progress
-        if (framesSinceCommit % 100 === 0) {
-          logAudio(`[ProtocolV2] capture progress: ${framesSinceCommit}fr (${msSinceLastCommit}ms, ${bytesSinceCommit}B)`);
-        }
-        return true;
-      } catch (err) {
-        logError('[ProtocolV2] sendFrame error', err);
-        // Fall back to v1 on error
-        state.useProtocolV2 = false;
-        state.protocolV2Client = null;
-      }
-    }
-
-    // v1 protocol (original code)
     if (!state.ws || state.ws.readyState !== 1) return false;
     try {
       if (resolvedSendPath === 'json+seq' || resolvedSendPath === 'json') {
@@ -2556,15 +2181,12 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
         let chunk = combined.subarray(offset, offset + chunkSamples);
         offset += chunkSamples;
 
-        // Protocol v2 uses server-VAD, so skip client-side noise gate
-        if (!state.useProtocolV2) {
-          const gateRms = (state.gateRms != null ? state.gateRms : gateParam);
-          if (gateRms > 0) {
-            let sum = 0;
-            for (let i = 0; i < chunk.length; i++) { const s = chunk[i]; sum += s * s; }
-            const rms = Math.sqrt(sum / Math.max(1, chunk.length));
-            if (rms < gateRms) continue;
-          }
+        const gateRms = (state.gateRms != null ? state.gateRms : gateParam);
+        if (gateRms > 0) {
+          let sum = 0;
+          for (let i = 0; i < chunk.length; i++) { const s = chunk[i]; sum += s * s; }
+          const rms = Math.sqrt(sum / Math.max(1, chunk.length));
+          if (rms < gateRms) continue;
         }
 
         try {
@@ -2607,10 +2229,9 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
         if (state.ingressPauseUntil && Date.now() < state.ingressPauseUntil) {
           continue;
         }
-        // Allow sending if v1 WebSocket is ready OR Protocol v2 is enabled
-        if ((state.ws && state.ws.readyState === 1) || state.useProtocolV2) {
+        if (state.ws && state.ws.readyState === 1) {
           try {
-            const ba = (state.ws && state.ws.bufferedAmount) || 0;
+            const ba = state.ws.bufferedAmount || 0;
             if (ba > MAX_BUFFERED * 4) { if (diag) log('backpressure drop', String(ba)); continue; }
             if (sendAudioFrameBuffer(pcmBuf)) {
               metrics.sentAppends += 1;
@@ -2629,19 +2250,16 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
         sentAny = true;
         armInactivityCommit();
         try { if (state.stragglerTimer) clearTimeout(state.stragglerTimer); } catch {}
-        // Only use v1 commit logic if NOT using Protocol v2 (which handles commits internally)
-        if (!state.useProtocolV2) {
-          state.stragglerTimer = setTimeout(() => {
-            try {
-              if (framesSinceCommit >= MIN_COMMIT_FRAMES && bytesSinceCommit >= Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)) {
-                const hadBytes = bytesSinceCommit;
-                if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${hadBytes} need=${Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)}`);
-              } else {
-                try { log(`commit.suppressed reason=straggler have=${bytesSinceCommit} need=${MIN_COMMIT_BYTES}`); } catch {}
-              }
-            } catch {}
-          }, 30);
-        }
+        state.stragglerTimer = setTimeout(() => {
+          try {
+            if (!USE_BACKEND_CONTROLLED_COMMITS && framesSinceCommit >= MIN_COMMIT_FRAMES && bytesSinceCommit >= Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)) {
+              const hadBytes = bytesSinceCommit;
+              if (sendAudioCommit('threshold')) log('commit(reason=threshold)', `have=${hadBytes} need=${Math.max(MIN_COMMIT_BYTES, commitRequiredBytes || 0)}`);
+            } else if (!USE_BACKEND_CONTROLLED_COMMITS) {
+              try { log(`commit.suppressed reason=straggler have=${bytesSinceCommit} need=${MIN_COMMIT_BYTES}`); } catch {}
+            }
+          } catch {}
+        }, 30);
       }
 
       carry = (offset < combined.length) ? combined.subarray(offset).slice(0) : new Float32Array(0);
@@ -3119,14 +2737,6 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
   async function startMic() {
     if (!state.connected) return log('Not connected');
     if (state.micActive) return;
-
-    // Protocol v3 handles microphone through WebRTC - skip web app capture
-    if (state.useProtocolV3 && state.protocolV3Client) {
-      log('[ProtocolV3] Microphone already active via WebRTC, skipping worklet capture');
-      state.micActive = true;
-      $('btnMic').textContent = 'Stop Mic';
-      return;
-    }
     try {
       try {
         console.info(FORCE_SIM ? '[sim] capture=sim, no gUM' : '[mic] capture=mic');
@@ -3257,15 +2867,6 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
 
   function stopMic() {
     if (!state.micActive) return;
-
-    // Protocol v3: Microphone controlled by WebRTC, just update UI state
-    if (state.useProtocolV3 && state.protocolV3Client) {
-      log('[ProtocolV3] Microphone remains active via WebRTC');
-      state.micActive = false;
-      $('btnMic').textContent = 'Start Mic';
-      return;
-    }
-
     try {
       state.processor && state.processor.disconnect();
       state.audioContext && state.audioContext.close();
@@ -3295,9 +2896,9 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
     teardownDriftTracker();
     clearResumeAudioTimer('reset');
     clearIdleCommit();
-    // Commit the audio buffer to trigger response (v1 only - v2 handles commits internally)
+    // Commit the audio buffer to trigger response
     try {
-      if (!state.useProtocolV2 && sendAudioCommit('stopMic')) {
+      if (sendAudioCommit('stopMic')) {
         state.ws.send(JSON.stringify({ type: 'response.create' }));
       }
     } catch {}
@@ -3365,23 +2966,7 @@ let isConnected=false; let connectBtn=null; function setConnected(v){ isConnecte
   bindOnce('#btnConnect', 'click', async (ev) => {
     try { ev.preventDefault?.(); } catch {}
     log('connect.click');
-    if (state.connected) {
-      // Handle disconnection for v3, v2, or v1
-      try {
-        if (state.protocolV3Client) {
-          log('[ProtocolV3] Disconnecting...');
-          state.protocolV3Client.disconnect?.();
-          state.protocolV3Client = null;
-        }
-        if (state.protocolV2Client) {
-          log('[ProtocolV2] Disconnecting...');
-          state.protocolV2Client.disconnect?.();
-          state.protocolV2Client = null;
-        }
-        state.ws && state.ws.close();
-      } catch {}
-      return;
-    }
+    if (state.connected) { try { state.ws && state.ws.close(); } catch {}; return; }
     state.audioUnlockPending = true;
     try { state.playCtx?.resume(); state.audioContext?.resume(); setTtsGain(1.0); } catch {}
     await startConnection();

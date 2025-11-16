@@ -26,15 +26,12 @@ class ProtocolV3 {
    * @param {string} opts.model - OpenAI model (default: 'gpt-4o-realtime-preview-2024-12-17')
    * @param {string} opts.voice - Voice name (default: 'nova')
    * @param {string} opts.instructions - System instructions
-   * @param {string} opts.personaMode - Persona mode ('realtime', 'recitation', or 'verbatim')
    */
   constructor(opts = {}) {
     this.tokenUrl = opts.tokenUrl || '/realtime/v3/session';
     this.model = opts.model || 'gpt-4o-realtime-preview-2024-12-17';
     this.voice = opts.voice || 'nova';
-    // Only use fallback if instructions not provided; null means use backend default
-    this.instructions = opts.instructions !== undefined ? opts.instructions : 'You are a helpful AI assistant.';
-    this.personaMode = opts.personaMode || 'realtime';
+    this.instructions = opts.instructions || 'You are a helpful AI assistant.';
 
     // WebRTC components
     this.pc = null;                 // RTCPeerConnection
@@ -99,12 +96,6 @@ class ProtocolV3 {
       await this.startMicrophone();
       console.log('[ProtocolV3] Microphone track added to peer connection');
 
-      // Step 2.5: Create data channel for receiving OpenAI events BEFORE creating offer
-      console.log('[ProtocolV3] Creating data channel for OpenAI events...');
-      this.dataChannel = this.pc.createDataChannel('oai-events');
-      this._setupDataChannelHandlers();
-      console.log('[ProtocolV3] Data channel created, will be included in offer');
-
       // Step 3: Create SDP offer (includes audio track)
       console.log('[ProtocolV3] Creating SDP offer...');
       const offer = await this.pc.createOffer();
@@ -116,16 +107,10 @@ class ProtocolV3 {
       // Step 4: Send SDP offer to backend proxy (backend will handle OpenAI connection + KB tools)
       console.log('[ProtocolV3] Sending SDP offer to backend proxy...');
       const proxyUrl = this.tokenUrl.replace('/realtime/v3/session', '/realtime/v3/proxy');
-
-      // Phase 1: Get user token for cross-session memory
-      const userToken = window.userAuth ? window.userAuth.getUserToken() : null;
-      console.log('[ProtocolV3] User token:', userToken ? userToken.substring(0, 15) + '...' : 'none');
-
       const sdpResponse = await fetch(proxyUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(userToken && { 'X-User-Token': userToken }),  // Add user token if available
         },
         body: JSON.stringify({
           sdp: this.pc.localDescription.sdp,
@@ -133,7 +118,6 @@ class ProtocolV3 {
           model: this.model,
           voice: this.voice,
           instructions: this.instructions,
-          persona_mode: this.personaMode,  // Add persona mode for dynamic persona selection
         }),
       });
 
@@ -204,15 +188,11 @@ class ProtocolV3 {
       this.localStream = await navigator.mediaDevices.getUserMedia(mergedConstraints);
       console.log('[ProtocolV3] Microphone access granted');
 
-      // Add audio track to peer connection (only if peer connection exists)
-      if (this.pc) {
-        const audioTrack = this.localStream.getAudioTracks()[0];
-        this.pc.addTrack(audioTrack, this.localStream);
-        console.log('[ProtocolV3] Audio track added to peer connection');
-      } else {
-        console.warn('[ProtocolV3] Peer connection not initialized, cannot add track');
-      }
+      // Add audio track to peer connection
+      const audioTrack = this.localStream.getAudioTracks()[0];
+      this.pc.addTrack(audioTrack, this.localStream);
 
+      console.log('[ProtocolV3] Audio track added to peer connection');
       return this.localStream;
 
     } catch (error) {
@@ -230,32 +210,6 @@ class ProtocolV3 {
       this.localStream.getTracks().forEach(track => track.stop());
       this.localStream = null;
       console.log('[ProtocolV3] Microphone stopped');
-    }
-  }
-
-  /**
-   * Mute microphone (disable audio track without stopping it).
-   */
-  muteMicrophone() {
-    if (this.localStream) {
-      const audioTracks = this.localStream.getAudioTracks();
-      audioTracks.forEach(track => {
-        track.enabled = false;
-      });
-      console.log('[ProtocolV3] Microphone muted');
-    }
-  }
-
-  /**
-   * Unmute microphone (enable audio track).
-   */
-  unmuteMicrophone() {
-    if (this.localStream) {
-      const audioTracks = this.localStream.getAudioTracks();
-      audioTracks.forEach(track => {
-        track.enabled = true;
-      });
-      console.log('[ProtocolV3] Microphone unmuted');
     }
   }
 
@@ -384,7 +338,6 @@ class ProtocolV3 {
     };
 
     this.dataChannel.onmessage = (event) => {
-    console.log("[ProtocolV3] Data channel onmessage handler attached");
       try {
         const msg = JSON.parse(event.data);
 
@@ -392,7 +345,6 @@ class ProtocolV3 {
           console.error(`[ProtocolV3] OpenAI error:`, msg.error);
           if (this.onError) this.onError(new Error(msg.error.message || 'Unknown error'));
         } else {
-          console.log("[ProtocolV3] Raw message:", JSON.stringify(msg).substring(0, 200));
           console.log(`[ProtocolV3] Data channel event: ${msg.type}`);
           if (this.onEvent) this.onEvent(msg);
         }

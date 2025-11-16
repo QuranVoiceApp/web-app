@@ -1,0 +1,86 @@
+const DEFAULT_FIR_COEFFS = new Float32Array([
+  -0.0007441012, -0.0005142242, 0.0006726046, 0.0009714602, -0.0005095548, -0.0016590302,
+  0.0000000000, 0.0024907689, 0.0011377751, -0.0031606154, -0.0030818069, 0.0031600647,
+  0.0057704204, -0.0018698461, -0.0087992628, -0.0012898049, 0.0113813008, 0.0066852947,
+  -0.0123769940, -0.0143181327, 0.0103636924, 0.0237402671, -0.0036459088, -0.0340669331,
+  -0.0100650059, 0.0440943327, 0.0352963400, -0.0525027146, -0.0877946753, 0.0581024101,
+  0.3122845237, 0.4404947113, 0.3122845237, 0.0581024101, -0.0877946753, -0.0525027146,
+  0.0352963400, 0.0440943327, -0.0100650059, -0.0340669331, -0.0036459088, 0.0237402671,
+  0.0103636924, -0.0143181327, -0.0123769940, 0.0066852947, 0.0113813008, -0.0012898049,
+  -0.0087992628, -0.0018698461, 0.0057704204, 0.0031600647, -0.0030818069, -0.0031606154,
+  0.0011377751, 0.0024907689, 0.0000000000, -0.0016590302, -0.0005095548, 0.0009714602,
+  0.0006726046, -0.0005142242, -0.0007441012
+]);
+
+class FirFilter {
+  constructor(coeffs) {
+    this.coeffs = Float32Array.from(coeffs || DEFAULT_FIR_COEFFS);
+    this.delay = new Float32Array(this.coeffs.length - 1);
+    this._buffer = new Float32Array(0);
+  }
+
+  process(block) {
+    const coeffs = this.coeffs;
+    const taps = coeffs.length;
+    const delay = this.delay;
+    const combinedLength = delay.length + block.length;
+    if (this._buffer.length !== combinedLength) {
+      this._buffer = new Float32Array(combinedLength);
+    }
+    const buffer = this._buffer;
+    buffer.set(delay, 0);
+    buffer.set(block, delay.length);
+    const out = new Float32Array(block.length);
+    for (let i = 0; i < block.length; i++) {
+      let acc = 0;
+      for (let k = 0; k < taps; k++) {
+        acc += coeffs[k] * buffer[i + taps - 1 - k];
+      }
+      out[i] = acc;
+    }
+    delay.set(buffer.subarray(block.length, buffer.length));
+    return out;
+  }
+
+  reset() {
+    this.delay.fill(0);
+  }
+}
+
+class PCMProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this._seq = 0;
+    this.enableFir = false;
+    this.fir = null;
+    this.port.onmessage = (event) => {
+      const data = event.data || {};
+      if (data.type === 'configure_fir') {
+        if (data.enabled) {
+          const coeffs = data.coeffs ? Float32Array.from(data.coeffs) : DEFAULT_FIR_COEFFS;
+          this.fir = new FirFilter(coeffs);
+          this.enableFir = true;
+        } else {
+          this.fir = null;
+          this.enableFir = false;
+        }
+      }
+    };
+  }
+
+  process(inputs) {
+    const ch0 = inputs && inputs[0] && inputs[0][0];
+    if (ch0) {
+      let payload;
+      if (this.enableFir && this.fir) {
+        payload = this.fir.process(ch0);
+      } else {
+        payload = ch0.slice(0);
+      }
+      this.port.postMessage({ seq: this._seq++, data: payload });
+    }
+    return true;
+  }
+}
+
+registerProcessor('pcm-capture', PCMProcessor);

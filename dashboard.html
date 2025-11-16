@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><title>Qur'an Tutor — Progress</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>body{font:16px system-ui,Arial;margin:24px} #wrap{max-width:960px;margin:auto}</style>
+</head><body><div id="wrap">
+<h1>Progress Dashboard</h1>
+<label>User ID: <input id="uid" value="nazmy-dev"></label>
+<label style="margin-left:12px">Days: <input id="days" type="number" value="14" min="1" max="60"></label>
+<button id="load">Load</button>
+<canvas id="overall" height="120"></canvas>
+<h3>Per Verse</h3>
+<div id="perverse"></div>
+<script>
+const $ = sel => document.querySelector(sel);
+async function fetchJSON(u){const r=await fetch(u); if(!r.ok) throw new Error(r.status); return r.json();}
+function drawOverall(ctx, data){
+  const avg = data.overall.avg_wer || 0;
+  return new Chart(ctx, {type:'bar', data:{labels:['Overall Avg WER'], datasets:[{label:'WER', data:[avg]}]},
+    options:{scales:{y:{beginAtZero:true,max:1}}}});
+}
+function makeVerseRow(v){
+  const div = document.createElement('div'); div.style.margin='8px 0';
+  div.textContent = `${v.verse_id} — attempts: ${v.attempts}, avg_wer: ${v.avg_wer}, best: ${v.best_wer}`;
+  return div;
+}
+$('#load').onclick = async ()=>{
+  const uid=$('#uid').value.trim(); const days=parseInt($('#days').value||'14',10);
+  const data = await fetchJSON(`/progress?user_id=${encodeURIComponent(uid)}&days=${days}`);
+  if(window._overallChart) window._overallChart.destroy();
+  window._overallChart = drawOverall($('#overall'), data);
+  const pv=$('#perverse'); pv.innerHTML=''; data.per_verse.forEach(v=>pv.appendChild(makeVerseRow(v)));
+};
+</script>
+</div></body></html>

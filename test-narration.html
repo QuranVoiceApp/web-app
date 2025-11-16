@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Narration Test</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 5px;
+        }
+        button {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 5px;
+        }
+        button:hover {
+            background: #5568d3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        #log {
+            background: #1e1e1e;
+            color: #00ff00;
+            padding: 15px;
+            border-radius: 5px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+            margin-top: 20px;
+        }
+        .log-entry {
+            margin: 3px 0;
+        }
+        .log-error {
+            color: #ff4444;
+        }
+        .log-success {
+            color: #00ff00;
+        }
+        .log-info {
+            color: #44aaff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎙️ Server-Side Narration Test</h1>
+        <p class="subtitle">Test the TTS narration service independently</p>
+
+        <div class="test-section">
+            <h3>Step 1: Start Narration</h3>
+            <p>This will create a narration session for Tafsir as-Sa'di Vol 1, page 25</p>
+            <button id="startBtn" onclick="startNarration()">Start Narration</button>
+            <button id="stopBtn" onclick="stopNarration()" disabled>Stop Narration</button>
+        </div>
+
+        <div class="test-section">
+            <h3>Step 2: Backend Status</h3>
+            <button onclick="checkBackend()">Check Backend Health</button>
+            <button onclick="checkNarrationStatus()" id="statusBtn" disabled>Check Narration Status</button>
+        </div>
+
+        <div id="log"></div>
+    </div>
+
+    <script src="./scripts/narration-player.js"></script>
+    <script>
+        let currentNarrationId = null;
+
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = `log-entry log-${type}`;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logDiv.appendChild(entry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        async function startNarration() {
+            try {
+                log('Starting narration session...', 'info');
+                document.getElementById('startBtn').disabled = true;
+
+                const response = await fetch('/kb/narrate/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        book_id: 'tafsir as-sadi volume 1',
+                        start_page: 25,
+                        lang: 'en',
+                        voice: 'alloy'
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+                log(`✓ Narration session created: ${data.narration_id}`, 'success');
+                log(`  Book: ${data.book_id}`, 'info');
+                log(`  Start page: ${data.start_page}`, 'info');
+                log(`  Voice: ${data.voice}`, 'info');
+
+                currentNarrationId = data.narration_id;
+
+                // Construct full stream URL
+                const streamUrl = `https://quran.asimo.io/kb/narrate/stream?narration_id=${data.narration_id}`;
+                log(`  Stream URL: ${streamUrl}`, 'info');
+
+                // Start narration player
+                if (window.narrationPlayer) {
+                    log('Starting narration player...', 'info');
+                    window.narrationPlayer.start(
+                        data.narration_id,
+                        streamUrl,
+                        {
+                            book_id: data.book_id,
+                            start_page: data.start_page
+                        }
+                    );
+                    log('✓ Narration player started', 'success');
+                } else {
+                    log('✗ narrationPlayer not available!', 'error');
+                }
+
+                document.getElementById('stopBtn').disabled = false;
+                document.getElementById('statusBtn').disabled = false;
+
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+                document.getElementById('startBtn').disabled = false;
+            }
+        }
+
+        function stopNarration() {
+            if (window.narrationPlayer) {
+                window.narrationPlayer.handleStop();
+                log('✓ Narration stopped', 'success');
+            }
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+            currentNarrationId = null;
+        }
+
+        async function checkBackend() {
+            try {
+                log('Checking backend health...', 'info');
+                const response = await fetch('/kb/ui/api/books');
+                if (response.ok) {
+                    const books = await response.json();
+                    log(`✓ Backend healthy (${books.length} books available)`, 'success');
+                } else {
+                    log(`✗ Backend returned ${response.status}`, 'error');
+                }
+            } catch (error) {
+                log(`✗ Backend error: ${error.message}`, 'error');
+            }
+        }
+
+        async function checkNarrationStatus() {
+            if (!currentNarrationId) {
+                log('No active narration session', 'info');
+                return;
+            }
+
+            try {
+                log(`Checking narration status for ${currentNarrationId}...`, 'info');
+                const response = await fetch(`/kb/narrate/status/${currentNarrationId}`);
+                
+                if (response.ok) {
+                    const status = await response.json();
+                    log(`✓ Narration status: ${status.status}`, 'success');
+                    log(`  Progress: ${JSON.stringify(status.progress)}`, 'info');
+                } else {
+                    log(`✗ Status check failed: ${response.status}`, 'error');
+                }
+            } catch (error) {
+                log(`✗ Error: ${error.message}`, 'error');
+            }
+        }
+
+        // Log when narration player loads
+        window.addEventListener('load', () => {
+            if (window.narrationPlayer) {
+                log('✓ NarrationPlayer module loaded', 'success');
+            } else {
+                log('✗ NarrationPlayer module NOT loaded', 'error');
+            }
+        });
+    </script>
+</body>
+</html>
